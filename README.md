@@ -21,4 +21,5 @@ python run_all.py instances/test1.json
 
 # inspect outputs in results/
 python analyze_results.py results/*.json --out summary.csv --plotdir plots --instances-dir instances
+
 ```
