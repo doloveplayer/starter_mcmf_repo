@@ -19,7 +19,7 @@ def run_lp_on_instance(inst):
                 edges.append((sid, user["id"], int(score)))
 
     # Create LP problem
-    prob = pulp.LpProblem("mcmf_lp_baseline", pulp.LpMinimize)
+    prob = pulp.LpProblem("lp_baseline", pulp.LpMinimize)
     var = {}
     for sid, uid, score in edges:
         name = f"f_{sid}_{uid}"

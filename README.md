@@ -13,13 +13,18 @@
 
 运行:
 ```bash
-# create a test instance
+# 创建单个测试实例
 python gen_instance.py --S 5 --U 12 --avg_degree 3 --out instances/test1.json --seed 42
 
-# run solvers on that instance
-python run_all.py instances/test1.json
+# 批量实例数据生成
+python gen_instances_bulk.py --outdir instances_bulk --S 20 40 80 160 --U 50 100 200 400 --deg 5 20 50 --seeds 1 2 3 --score_mode clustered
 
-# inspect outputs in results/
+# 运行所有调配算法
+python run_all.py instances --outdir results --topk 20 --warm --recursive --workers 4
+# 或者
+python run_all.py instances/test.json --outdir results --topk 20 --warm --recursive --workers 4
+
+# 数据分析
 python analyze_results.py results/*.json --out summary.csv --plotdir plots --instances-dir instances
 
 ```
@@ -33,7 +38,6 @@ python analyze_results.py results/*.json --out summary.csv --plotdir plots --ins
 
 ## plots
 - fulfillment_per_instance: 满足率对比（assigned / demand）。用于衡量覆盖能力。
-- impr_over_greedy_hist: 观察改善幅度的分布。
 - runtime_per_instance: 每实例或均值的运行时间比较。用来比较算法时效性。
 - runtime_vs_pref: 观察“时间—质量”权衡（例如是否存在更慢但质量更高的方法）。
 - total_pref_per_instance: 直观比较每个实例上方法的偏好得分差异。

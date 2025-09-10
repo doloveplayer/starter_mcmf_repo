@@ -26,9 +26,11 @@ import matplotlib.pyplot as plt
 # optional
 try:
     from scipy import stats
+
     HAS_SCIPY = True
 except Exception:
     HAS_SCIPY = False
+
 
 def load_instance_total_demand(instances_dir, instance_name):
     """
@@ -47,6 +49,7 @@ def load_instance_total_demand(instances_dir, instance_name):
         return total
     except Exception:
         return None
+
 
 def parse_result_file(path, instances_dir=None):
     """
@@ -94,6 +97,17 @@ def parse_result_file(path, instances_dir=None):
         # different LP implementation used 'total_assigned' naming
         lp_total_assigned = lp_result.get("total_assigned", None)
 
+    # Warm MCMF
+    warm_mcmf_result = get_nested(data, "warm_mcmf", "result", default=None)
+    warm_time = get_nested(data, "warm_mcmf", "time", default=None)
+    warm_total_pref = None
+    warm_total_assigned = None
+    warm_timings = None
+    if isinstance(warm_mcmf_result, dict):
+        warm_total_pref = warm_mcmf_result.get("total_pref_score", None)
+        warm_total_assigned = warm_mcmf_result.get("total_flow", None)
+        warm_timings = warm_mcmf_result.get("timings", None)
+
     # optionally compute total_demand by loading instance file
     total_demand = None
     if instances_dir is not None:
@@ -113,8 +127,14 @@ def parse_result_file(path, instances_dir=None):
         "lp_total_pref": try_float(lp_total_pref),
         "lp_total_assigned": try_float(lp_total_assigned),
         "lp_time": try_float(lp_time),
+        "warm_mcmf_total_pref": try_float(warm_total_pref),
+        "warm_mcmf_total_assigned": try_float(warm_total_assigned),
+        "warm_mcmf_time": try_float(warm_timings.total_time if warm_timings is not None else None),
+        "warm_mcmf_greed_time": try_float(warm_timings.greedy_time if warm_timings is not None else None),
+        "warm_mcmf_mcmf_time": try_float(warm_timings.mcmf_time if warm_timings is not None else None),
         "total_demand": try_float(total_demand)
     }
+
 
 def try_float(x):
     if x is None:
@@ -124,24 +144,36 @@ def try_float(x):
     except Exception:
         return None
 
+
 def aggregate_results(rows):
     df = pd.DataFrame(rows)
     # computed columns
     # fulfillment: assigned / total_demand if available
     if "total_demand" in df.columns:
-        df["mcmf_fulfillment"] = df.apply(lambda r: safe_divide(r.get("mcmf_total_flow"), r.get("total_demand")), axis=1)
-        df["greedy_fulfillment"] = df.apply(lambda r: safe_divide(r.get("greedy_total_assigned"), r.get("total_demand")), axis=1)
-        df["lp_fulfillment"] = df.apply(lambda r: safe_divide(r.get("lp_total_assigned"), r.get("total_demand")), axis=1)
+        df["mcmf_fulfillment"] = df.apply(lambda r: safe_divide(r.get("mcmf_total_flow"), r.get("total_demand")),
+                                          axis=1)
+        df["greedy_fulfillment"] = df.apply(
+            lambda r: safe_divide(r.get("greedy_total_assigned"), r.get("total_demand")), axis=1)
+        df["lp_fulfillment"] = df.apply(lambda r: safe_divide(r.get("lp_total_assigned"), r.get("total_demand")),
+                                        axis=1)
+        df["warm_mcmf_fulfillment"] = df.apply(
+            lambda r: safe_divide(r.get("warm_mcmf_total_assigned"), r.get("total_demand")), axis=1)
     else:
         df["mcmf_fulfillment"] = None
         df["greedy_fulfillment"] = None
         df["lp_fulfillment"] = None
+        df["warm_mcmf_fulfillment"] = None
 
     # improvement percent over greedy and lp
-    df["impr_over_greedy_pct"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("greedy_total_pref")), axis=1)
-    df["impr_over_lp_pct"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("lp_total_pref")), axis=1)
+    df["impr_over_greedy_pct"] = df.apply(
+        lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("greedy_total_pref")), axis=1)
+    df["dis_between_lp_pct"] = df.apply(lambda r: percent_improvement(r.get("lp_total_pref"), r.get("mcmf_total_pref")),
+                                        axis=1)
+    df["dis_between_warm_pct"] = df.apply(
+        lambda r: percent_improvement(r.get("warm_mcmf_total_pref"), r.get("mcmf_total_pref")), axis=1)
 
     return df
+
 
 def safe_divide(a, b):
     try:
@@ -154,6 +186,7 @@ def safe_divide(a, b):
     except Exception:
         return None
 
+
 def percent_improvement(a, b):
     # (a - b) / max(|b|, eps)
     if a is None or b is None:
@@ -161,14 +194,16 @@ def percent_improvement(a, b):
     denom = max(abs(b), 1e-9)
     return 100.0 * (a - b) / denom
 
+
 def save_csv(df, out_path):
     df.to_csv(out_path, index=False)
     print(f"Wrote CSV summary to {out_path}")
 
+
 def plot_comparisons(df, plotdir, max_instances_for_bar=20):
     os.makedirs(plotdir, exist_ok=True)
     # determine methods available
-    methods = ["mcmf", "greedy", "lp"]
+    methods = ["mcmf", "greedy", "lp", "warm_mcmf"]
     # Only include methods with at least one non-null total_pref
     available = []
     for m in methods:
@@ -185,7 +220,7 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
     # 1) Total preference comparison: grouped bar per instance (or mean+std if many)
     pref_cols = [f"{m}_total_pref" for m in available]
     if ninst <= max_instances_for_bar:
-        ax = df[pref_cols].plot.bar(figsize=(max(8, ninst*0.6), 6))
+        ax = df[pref_cols].plot.bar(figsize=(max(8, ninst * 0.6), 6))
         ax.set_title("Total preference (higher is better) - per instance")
         ax.set_xlabel("Instance (index)")
         ax.set_ylabel("Total preference")
@@ -196,9 +231,9 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
         print("Saved", fpath)
     else:
         # aggregated mean+std
-        stats_df = df[pref_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index":"method"})
-        stats_df["method"] = stats_df["method"].str.replace("_total_pref","")
-        fig, ax = plt.subplots(figsize=(8,6))
+        stats_df = df[pref_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
+        stats_df["method"] = stats_df["method"].str.replace("_total_pref", "")
+        fig, ax = plt.subplots(figsize=(8, 6))
         ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
         ax.set_title("Mean total preference ± std (across instances)")
         ax.set_ylabel("Total preference")
@@ -212,7 +247,7 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
     time_cols = [f"{m}_time" for m in available]
     if df[time_cols].notnull().any().any():
         if ninst <= max_instances_for_bar:
-            ax = df[time_cols].plot.bar(figsize=(max(8, ninst*0.6), 6))
+            ax = df[time_cols].plot.bar(figsize=(max(8, ninst * 0.6), 6))
             ax.set_title("Runtime (seconds) - per instance")
             ax.set_xlabel("Instance (index)")
             ax.set_ylabel("Time (s)")
@@ -222,9 +257,9 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
             plt.close()
             print("Saved", fpath)
         else:
-            stats_df = df[time_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index":"method"})
-            stats_df["method"] = stats_df["method"].str.replace("_time","")
-            fig, ax = plt.subplots(figsize=(8,6))
+            stats_df = df[time_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
+            stats_df["method"] = stats_df["method"].str.replace("_time", "")
+            fig, ax = plt.subplots(figsize=(8, 6))
             ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
             ax.set_title("Mean runtime ± std (across instances)")
             ax.set_ylabel("Time (s)")
@@ -236,10 +271,11 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
 
     # 3) Fulfillment rate if available
     if df["mcmf_fulfillment"].notnull().any():
-        ful_cols = [c for c in ["mcmf_fulfillment","greedy_fulfillment","lp_fulfillment"] if c in df.columns and df[c].notnull().any()]
+        ful_cols = [c for c in ["mcmf_fulfillment", "greedy_fulfillment", "lp_fulfillment", "warm_mcmf_fulfillment"] if
+                    c in df.columns and df[c].notnull().any()]
         if len(ful_cols) > 0:
             if ninst <= max_instances_for_bar:
-                ax = df[ful_cols].plot.bar(figsize=(max(8, ninst*0.6), 6))
+                ax = df[ful_cols].plot.bar(figsize=(max(8, ninst * 0.6), 6))
                 ax.set_title("Fulfillment rate (assigned / total demand) - per instance")
                 ax.set_xlabel("Instance (index)")
                 ax.set_ylabel("Fulfillment rate")
@@ -249,9 +285,10 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
                 plt.close()
                 print("Saved", fpath)
             else:
-                stats_df = df[ful_cols].agg(["mean","std"]).transpose().reset_index().rename(columns={"index":"method"})
-                stats_df["method"] = stats_df["method"].str.replace("_fulfillment","")
-                fig, ax = plt.subplots(figsize=(8,6))
+                stats_df = df[ful_cols].agg(["mean", "std"]).transpose().reset_index().rename(
+                    columns={"index": "method"})
+                stats_df["method"] = stats_df["method"].str.replace("_fulfillment", "")
+                fig, ax = plt.subplots(figsize=(8, 6))
                 ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
                 ax.set_title("Mean fulfillment rate ± std (across instances)")
                 ax.set_ylabel("Fulfillment rate")
@@ -262,14 +299,14 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
                 print("Saved", fpath)
 
     # 4) Scatter: runtime vs total_pref for each method (if time data exists)
-    fig, ax = plt.subplots(figsize=(8,6))
+    fig, ax = plt.subplots(figsize=(8, 6))
     plotted = False
-    colors = {"mcmf":"C0","greedy":"C1","lp":"C2"}
+    colors = {"mcmf": "C0", "greedy": "C1", "lp": "C2", "warm_mcmf": "C3"}
     for m in available:
         x = df[f"{m}_time"]
         y = df[f"{m}_total_pref"]
         if x.notnull().any() and y.notnull().any():
-            ax.scatter(x, y, label=m, color=colors.get(m,"C0"), alpha=0.7)
+            ax.scatter(x, y, label=m, color=colors.get(m, "C0"), alpha=0.7)
             plotted = True
     if plotted:
         ax.set_xlabel("Runtime (s)")
@@ -283,20 +320,6 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
         print("Saved", fpath)
     else:
         plt.close()
-
-    # 5) Improvement histograms
-    if df["impr_over_greedy_pct"].notnull().any():
-        fig, ax = plt.subplots(figsize=(8,6))
-        vals = df["impr_over_greedy_pct"].dropna()
-        ax.hist(vals, bins=20)
-        ax.set_title("Percent improvement of MCMF over Greedy (per instance)")
-        ax.set_xlabel("Improvement (%)")
-        ax.set_ylabel("Count")
-        plt.tight_layout()
-        fpath = os.path.join(plotdir, "impr_over_greedy_hist.png")
-        plt.savefig(fpath)
-        plt.close()
-        print("Saved", fpath)
 
 def statistical_tests(df):
     """
@@ -315,22 +338,33 @@ def statistical_tests(df):
     mask = a.notnull() & b.notnull()
     if mask.any():
         t, p = stats.ttest_rel(a[mask], b[mask])
-        res["mcmf_vs_greedy_t"] = float(t); res["mcmf_vs_greedy_p"] = float(p)
+        res["mcmf_vs_greedy_t"] = float(t)
+        res["mcmf_vs_greedy_p"] = float(p)
     # mcmf vs lp
     if "lp_total_pref" in df.columns:
         c = df["lp_total_pref"]
         mask2 = a.notnull() & c.notnull()
         if mask2.any():
             t2, p2 = stats.ttest_rel(a[mask2], c[mask2])
-            res["mcmf_vs_lp_t"] = float(t2); res["mcmf_vs_lp_p"] = float(p2)
+            res["mcmf_vs_lp_t"] = float(t2)
+            res["mcmf_vs_lp_p"] = float(p2)
+    if "warm_mcmf_total_pref" in df.columns:
+        d = df["warm_mcmf_total_pref"]
+        mask2 = a.notnull() & d.notnull()
+        if mask2.any():
+            t2, p2 = stats.ttest_rel(a[mask2], d[mask2])
+            res["mcmf_vs_lp_t"] = float(t2)
+            res["mcmf_vs_lp_p"] = float(p2)
     return res
+
 
 def main():
     p = argparse.ArgumentParser(description="Aggregate JSON result files and produce CSV + plots")
     p.add_argument("results", nargs="+", help="one or more result JSON files or glob pattern (e.g. results/*.json)")
     p.add_argument("--out", default="summary.csv", help="CSV output file")
     p.add_argument("--plotdir", default="plots", help="directory to save plots")
-    p.add_argument("--instances-dir", default=None, help="optional directory containing instance JSONs to compute total demand (names must match instance field)")
+    p.add_argument("--instances-dir", default=None,
+                   help="optional directory containing instance JSONs to compute total demand (names must match instance field)")
     args = p.parse_args()
 
     # expand globs and directories
@@ -374,6 +408,7 @@ def main():
 
     # generate plots
     plot_comparisons(df, args.plotdir)
+
 
 if __name__ == "__main__":
     main()
