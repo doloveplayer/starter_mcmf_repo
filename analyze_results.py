@@ -97,16 +97,16 @@ def parse_result_file(path, instances_dir=None):
         # different LP implementation used 'total_assigned' naming
         lp_total_assigned = lp_result.get("total_assigned", None)
 
-    # Warm MCMF
-    warm_mcmf_result = get_nested(data, "warm_mcmf", "result", default=None)
-    warm_time = get_nested(data, "warm_mcmf", "time", default=None)
-    warm_total_pref = None
-    warm_total_assigned = None
-    warm_timings = None
-    if isinstance(warm_mcmf_result, dict):
-        warm_total_pref = warm_mcmf_result.get("total_pref_score", None)
-        warm_total_assigned = warm_mcmf_result.get("total_flow", None)
-        warm_timings = warm_mcmf_result.get("timings", None)
+    # # Warm MCMF
+    # warm_mcmf_result = get_nested(data, "warm_mcmf", "result", default=None)
+    # warm_time = get_nested(data, "warm_mcmf", "time", default=None)
+    # warm_total_pref = None
+    # warm_total_assigned = None
+    # warm_timings = None
+    # if isinstance(warm_mcmf_result, dict):
+    #     warm_total_pref = warm_mcmf_result.get("total_pref_score", None)
+    #     warm_total_assigned = warm_mcmf_result.get("total_flow", None)
+    #     warm_timings = warm_mcmf_result.get("timings", None)
 
     # optionally compute total_demand by loading instance file
     total_demand = None
@@ -127,11 +127,11 @@ def parse_result_file(path, instances_dir=None):
         "lp_total_pref": try_float(lp_total_pref),
         "lp_total_assigned": try_float(lp_total_assigned),
         "lp_time": try_float(lp_time),
-        "warm_mcmf_total_pref": try_float(warm_total_pref),
-        "warm_mcmf_total_assigned": try_float(warm_total_assigned),
-        "warm_mcmf_time": try_float(warm_timings.total_time if warm_timings is not None else None),
-        "warm_mcmf_greed_time": try_float(warm_timings.greedy_time if warm_timings is not None else None),
-        "warm_mcmf_mcmf_time": try_float(warm_timings.mcmf_time if warm_timings is not None else None),
+        # "warm_mcmf_total_pref": try_float(warm_total_pref),
+        # "warm_mcmf_total_assigned": try_float(warm_total_assigned),
+        # "warm_mcmf_time": try_float(warm_timings.total_time if warm_timings is not None else None),
+        # "warm_mcmf_greed_time": try_float(warm_timings.greedy_time if warm_timings is not None else None),
+        # "warm_mcmf_mcmf_time": try_float(warm_timings.mcmf_time if warm_timings is not None else None),
         "total_demand": try_float(total_demand)
     }
 
@@ -156,21 +156,21 @@ def aggregate_results(rows):
             lambda r: safe_divide(r.get("greedy_total_assigned"), r.get("total_demand")), axis=1)
         df["lp_fulfillment"] = df.apply(lambda r: safe_divide(r.get("lp_total_assigned"), r.get("total_demand")),
                                         axis=1)
-        df["warm_mcmf_fulfillment"] = df.apply(
-            lambda r: safe_divide(r.get("warm_mcmf_total_assigned"), r.get("total_demand")), axis=1)
+        # df["warm_mcmf_fulfillment"] = df.apply(
+        #     lambda r: safe_divide(r.get("warm_mcmf_total_assigned"), r.get("total_demand")), axis=1)
     else:
         df["mcmf_fulfillment"] = None
         df["greedy_fulfillment"] = None
         df["lp_fulfillment"] = None
-        df["warm_mcmf_fulfillment"] = None
+        # df["warm_mcmf_fulfillment"] = None
 
     # improvement percent over greedy and lp
     df["impr_over_greedy_pct"] = df.apply(
         lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("greedy_total_pref")), axis=1)
     df["dis_between_lp_pct"] = df.apply(lambda r: percent_improvement(r.get("lp_total_pref"), r.get("mcmf_total_pref")),
                                         axis=1)
-    df["dis_between_warm_pct"] = df.apply(
-        lambda r: percent_improvement(r.get("warm_mcmf_total_pref"), r.get("mcmf_total_pref")), axis=1)
+    # df["dis_between_warm_pct"] = df.apply(
+    #     lambda r: percent_improvement(r.get("warm_mcmf_total_pref"), r.get("mcmf_total_pref")), axis=1)
 
     return df
 

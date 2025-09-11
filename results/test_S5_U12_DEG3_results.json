@@ -98,7 +98,7 @@
         ]
       }
     },
-    "time": 0.0015556812286376953
+    "time": 0.0009961128234863281
   },
   "greedy": {
     "result": {
@@ -266,104 +266,20 @@
         ]
       }
     },
-    "time": 0.02226567268371582
+    "time": 0.7608366012573242
   },
   "warm_mcmf": {
     "result": {
-      "total_flow": 158,
-      "total_pref_score": 11725,
-      "allocations": {
-        "u0": [
-          [
-            "s0",
-            15
-          ]
-        ],
-        "u1": [
-          [
-            "s0",
-            3
-          ]
-        ],
-        "u2": [
-          [
-            "s0",
-            13
-          ]
-        ],
-        "u3": [
-          [
-            "s2",
-            1
-          ],
-          [
-            "s3",
-            10
-          ]
-        ],
-        "u4": [
-          [
-            "s0",
-            6
-          ]
-        ],
-        "u5": [
-          [
-            "s1",
-            18
-          ],
-          [
-            "s4",
-            12
-          ]
-        ],
-        "u6": [
-          [
-            "s4",
-            24
-          ]
-        ],
-        "u7": [
-          [
-            "s0",
-            19
-          ]
-        ],
-        "u8": [
-          [
-            "s0",
-            11
-          ]
-        ],
-        "u9": [
-          [
-            "s4",
-            5
-          ]
-        ],
-        "u10": [
-          [
-            "s1",
-            6
-          ],
-          [
-            "s2",
-            12
-          ]
-        ],
-        "u11": [
-          [
-            "s3",
-            3
-          ]
-        ]
-      },
-      "timings": {
-        "greedy_time": 0.0,
-        "mcmf_time": 0.0,
-        "total_time": 0.0
-      }
+      "error": "",
+      "traceback": "Traceback (most recent call last):\n  File \"D:\\hyh\\starter_mcmf_repo\\run_all.py\", line 56, in run_instance\n    warm_mcmf_res = run_mcmf_with_warmstart(inst, top_k=topk, use_warmstart=use_warmstart, verbose=True)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_warmstart.py\", line 177, in run_mcmf_with_warmstart\n    mcmf_total_flow, mcmf_total_cost = mcmf.solve(s, t)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf.py\", line 70, in solve\n    while self.dijkstra(s, t, prev_node, prev_edge, dist):\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf.py\", line 58, in dijkstra\n    heapq.heappush(heap, (dist[v], v))\nMemoryError\n"
     },
-    "time": 0.0009968280792236328
+    "time": null
+  },
+  "scaling_mcmf": {
+    "result": {
+      "error": "",
+      "traceback": "Traceback (most recent call last):\n  File \"D:\\hyh\\starter_mcmf_repo\\run_all.py\", line 66, in run_instance\n    scaling_mcmf_res = run_mcmf_flow_scaling(inst, top_k=topk, verbose=False)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 208, in run_mcmf_flow_scaling\n    incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 106, in flow_scaling_solve\n    reachable, dist, prev_node, prev_edge = dijkstra_with_threshold(mcmf.graph, mcmf.potential, n, s, t, delta)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 68, in dijkstra_with_threshold\n    heapq.heappush(heap, (nd, v))\nMemoryError\n"
+    },
+    "time": null
   }
 }

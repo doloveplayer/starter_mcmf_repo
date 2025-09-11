@@ -9,6 +9,7 @@ from greedy import run_greedy_on_instance
 
 INF = 10 ** 18
 
+
 def prune_instance_topk(inst, k):
     """
     Return a deep-copied instance where for each user we keep only top-k suppliers by score.
@@ -17,7 +18,7 @@ def prune_instance_topk(inst, k):
     if k is None:
         return copy.deepcopy(inst)
     new_inst = {"suppliers": copy.deepcopy(inst.get("suppliers", [])),
-                "users": [] , "meta": copy.deepcopy(inst.get("meta", {}))}
+                "users": [], "meta": copy.deepcopy(inst.get("meta", {}))}
     for user in inst.get("users", []):
         prefs = user.get("supplier_scores", [])
         # sort by score desc
@@ -28,6 +29,7 @@ def prune_instance_topk(inst, k):
     # update meta (note: we keep original meta too)
     new_inst["meta"]["top_k"] = k
     return new_inst
+
 
 def run_mcmf_with_warmstart(inst, top_k=None, use_warmstart=True, verbose=False):
     """
@@ -56,7 +58,7 @@ def run_mcmf_with_warmstart(inst, top_k=None, use_warmstart=True, verbose=False)
     # build MCMF graph (like original) but record edge indices for s->sup, sup->user, user->t
     mcmf = MinCostMaxFlow(total_nodes)
     supplier_id_to_index = {}
-    s_to_sup_edge_idx = {}         # sup_node -> edge index in graph[s]
+    s_to_sup_edge_idx = {}  # sup_node -> edge index in graph[s]
     for idx, sup in enumerate(suppliers):
         node_id = 1 + idx
         supplier_id_to_index[sup["id"]] = node_id
@@ -66,7 +68,7 @@ def run_mcmf_with_warmstart(inst, top_k=None, use_warmstart=True, verbose=False)
         s_to_sup_edge_idx[node_id] = idx1
 
     user_id_to_index = {}
-    user_to_t_edge_idx = {}        # user_node -> idx in graph[user_node]
+    user_to_t_edge_idx = {}  # user_node -> idx in graph[user_node]
     for idx, user in enumerate(users):
         node_id = 1 + S + idx
         user_id_to_index[user["id"]] = node_id
@@ -83,19 +85,21 @@ def run_mcmf_with_warmstart(inst, top_k=None, use_warmstart=True, verbose=False)
                 s_node = supplier_id_to_index[sid]
                 idx1 = len(mcmf.graph[s_node])
                 # capacity large (allow splitting) cost = -score
-                mcmf.add_edge(s_node, u_node, 10**9, -int(score))
+                mcmf.add_edge(s_node, u_node, 10 ** 9, -int(score))
                 sup_user_edge_idx[(s_node, u_node)] = idx1
 
     # Optionally run greedy to obtain warm-start allocations
     greedy_time = 0.0
     greedy_alloc = None
+    greedy_res = None
     if use_warmstart:
         t0 = time.time()
         greedy_res = run_greedy_on_instance(inst_proc)  # uses a copy internally
         greedy_time = time.time() - t0
         greedy_alloc = greedy_res.get("allocations", {})
         if verbose:
-            print(f"[warmstart] greedy assigned total_pref={greedy_res.get('total_pref_score')} total_assigned={greedy_res.get('total_assigned')} in {greedy_time:.3f}s")
+            print(
+                f"[warmstart] greedy assigned total_pref={greedy_res.get('total_pref_score')} total_assigned={greedy_res.get('total_assigned')} in {greedy_time:.3f}s")
 
         # apply greedy allocation to residual graph:
         # For each user u: for each (sup_id, amt) allocated:
@@ -170,33 +174,52 @@ def run_mcmf_with_warmstart(inst, top_k=None, use_warmstart=True, verbose=False)
     t0 = time.time()
     # initialize potentials using Bellman-Ford (this method uses current residual costs)
     mcmf.init_potential(s)
-    total_flow, total_cost = mcmf.solve(s, t)
+    mcmf_total_flow, mcmf_total_cost = mcmf.solve(s, t)
     mcmf_time = time.time() - t0
 
-    # reconstruct allocations (same as original reconstruction)
+    # --- rebuild full allocations & compute totals from residual graph (robust) ---
     allocations = {u["id"]: [] for u in users}
+    total_flow_all = 0.0
+    total_pref_all = 0.0
+
+    # build a score lookup map (sup_node,user_node) -> score
+    score_map = {}
+    for user in users:
+        u_node = user_id_to_index[user["id"]]
+        for sid, score in user.get("supplier_scores", []):
+            if sid in supplier_id_to_index:
+                s_node = supplier_id_to_index[sid]
+                score_map[(s_node, u_node)] = int(score)
+
     for sup in suppliers:
         sup_node = supplier_id_to_index[sup["id"]]
-        for v, cap, cost, rev in mcmf.graph[sup_node]:
+        for idx, (v, cap, cost, rev) in enumerate(mcmf.graph[sup_node]):
             if 1 + S <= v <= S + U:
                 user_node = v
-                # reverse edge at user_node index rev has capacity equal to allocated flow
+                # the reverse edge at user_node index 'rev' stores the flow assigned on forward edge:
                 allocated = mcmf.graph[user_node][rev][1]
                 if allocated > 0:
                     user_id = users[user_node - 1 - S]["id"]
-                    allocations[user_id].append((sup["id"], allocated))
+                    allocations[user_id].append((sup["id"], int(allocated)))
+                    total_flow_all += allocated
+                    sc = score_map.get((sup_node, user_node), 0)
+                    total_pref_all += allocated * sc
 
+    total_flow_all = int(total_flow_all)
+    total_pref_all = int(total_pref_all)
     result = {
-        "total_flow": int(total_flow),
-        "total_pref_score": int(-total_cost),
+        "total_flow": total_flow_all,
+        "total_pref_score": total_pref_all,
         "allocations": allocations,
         "timings": {"greedy_time": greedy_time, "mcmf_time": mcmf_time, "total_time": greedy_time + mcmf_time}
     }
     return result
 
+
 # If module run as script, a tiny demo
 if __name__ == "__main__":
     import argparse, json
+
     p = argparse.ArgumentParser()
     p.add_argument("--inst", required=True)
     p.add_argument("--out", default=None)

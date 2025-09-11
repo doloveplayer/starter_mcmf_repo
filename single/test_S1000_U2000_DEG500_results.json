@@ -16662,7 +16662,7 @@
         ]
       }
     },
-    "time": 945.9521777629852
+    "time": 898.9600903987885
   },
   "greedy": {
     "result": {
@@ -32027,7 +32027,7 @@
         ]
       }
     },
-    "time": 0.13301491737365723
+    "time": 0.12602591514587402
   },
   "lp": {
     "result": {
@@ -47417,6 +47417,20 @@
         ]
       }
     },
-    "time": 109.50657033920288
+    "time": 104.86669421195984
+  },
+  "warm_mcmf": {
+    "result": {
+      "error": "",
+      "traceback": "Traceback (most recent call last):\n  File \"D:\\hyh\\starter_mcmf_repo\\run_all.py\", line 56, in run_instance\n    warm_mcmf_res = run_mcmf_with_warmstart(inst, top_k=topk, use_warmstart=use_warmstart, verbose=True)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_warmstart.py\", line 177, in run_mcmf_with_warmstart\n    mcmf_total_flow, mcmf_total_cost = mcmf.solve(s, t)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf.py\", line 70, in solve\n    while self.dijkstra(s, t, prev_node, prev_edge, dist):\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf.py\", line 58, in dijkstra\n    heapq.heappush(heap, (dist[v], v))\nMemoryError\n"
+    },
+    "time": null
+  },
+  "scaling_mcmf": {
+    "result": {
+      "error": "",
+      "traceback": "Traceback (most recent call last):\n  File \"D:\\hyh\\starter_mcmf_repo\\run_all.py\", line 66, in run_instance\n    scaling_mcmf_res = run_mcmf_flow_scaling(inst, top_k=topk, verbose=False)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 208, in run_mcmf_flow_scaling\n    incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 106, in flow_scaling_solve\n    reachable, dist, prev_node, prev_edge = dijkstra_with_threshold(mcmf.graph, mcmf.potential, n, s, t, delta)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 68, in dijkstra_with_threshold\n    heapq.heappush(heap, (nd, v))\nMemoryError\n"
+    },
+    "time": null
   }
 }
