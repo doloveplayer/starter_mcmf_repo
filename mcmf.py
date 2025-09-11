@@ -1,6 +1,116 @@
 #!/usr/bin/env python3
 import heapq
-INF = 10**18
+
+INF = 10 ** 18
+
+
+def detect_negative_cycle(mcmf, src=None):
+    """
+    检测残差图中是否存在可达的负成本环（只考虑 cap>0 边）。
+    若 src 为 None，则检测任何节点可达的负环（对所有节点初始化 dist=0）。
+    返回 True/False。
+    """
+    n = mcmf.n
+    INF = 10 ** 18
+    # If src provided, initialize dist[src] = 0 else initialize all zeros (to detect any negative cycle)
+    if src is None:
+        dist = [0.0] * n
+    else:
+        dist = [INF] * n
+        dist[src] = 0
+    parent = [(-1, -1)] * n
+    x = -1
+    for i in range(n):
+        x = -1
+        for u in range(n):
+            if dist[u] == INF:
+                continue
+            for ei, (v, cap, cost, rev) in enumerate(mcmf.graph[u]):
+                if cap <= 0:
+                    continue
+                if dist[v] > dist[u] + cost:
+                    dist[v] = dist[u] + cost
+                    parent[v] = (u, ei)
+                    x = v
+        if x == -1:
+            return False
+    # if we reached here x != -1 meaning there is a negative cycle reachable
+    return True
+
+
+def cancel_negative_cycles(mcmf, max_iter=1000, time_limit=None):
+    """
+    在残差图上尝试消除负成本环（cycle-cancel）。
+    返回 (total_reduced_cost_positive, iterations_done)
+    total_reduced_cost_positive 表示总共降低的成本（正数表示成本减少）。
+    注意：调用应设置合理的 max_iter 与 time_limit 以避免长时间阻塞。
+    """
+    import time
+    n = mcmf.n
+    INF = 10 ** 18
+    start = time.time()
+    iters = 0
+    total_reduced = 0.0
+    while True:
+        if max_iter is not None and iters >= max_iter:
+            break
+        if time_limit is not None and (time.time() - start) > time_limit:
+            break
+        # Bellman-Ford detect negative cycle and get a node on it
+        dist = [0.0] * n
+        parent = [(-1, -1)] * n
+        x = -1
+        for i in range(n):
+            x = -1
+            for u in range(n):
+                for ei, (v, cap, cost, rev) in enumerate(mcmf.graph[u]):
+                    if cap <= 0: continue
+                    if dist[v] > dist[u] + cost:
+                        dist[v] = dist[u] + cost
+                        parent[v] = (u, ei)
+                        x = v
+            if x == -1:
+                break
+        if x == -1:
+            break
+        # walk back n steps to guarantee on cycle
+        y = x
+        for _ in range(n):
+            y, _ = parent[y]
+            if y == -1:
+                break
+        if y == -1:
+            break
+        # retrieve cycle
+        cycle = []
+        v = y
+        while True:
+            u, ei = parent[v]
+            cycle.append((u, ei))
+            v = u
+            if v == y:
+                break
+        cycle.reverse()
+        # compute bottleneck
+        delta = INF
+        cycle_cost = 0
+        for (u, ei) in cycle:
+            v, cap, cost, rev = mcmf.graph[u][ei]
+            if cap < delta:
+                delta = cap
+            cycle_cost += cost
+        if delta <= 0 or cycle_cost >= 0:
+            # not a negative cycle or nothing to do
+            break
+        # augment along cycle
+        for (u, ei) in cycle:
+            v, cap, cost, rev = mcmf.graph[u][ei]
+            mcmf.graph[u][ei][1] -= delta
+            mcmf.graph[v][rev][1] += delta
+        total_reduced += -delta * cycle_cost
+        iters += 1
+    return total_reduced, iters
+
 
 class MinCostMaxFlow:
     def __init__(self, n):
@@ -36,15 +146,20 @@ class MinCostMaxFlow:
             else:
                 self.potential[i] = 0
 
-    def dijkstra(self, s, t, prev_node, prev_edge, dist):
+    def dijkstra(self, s, t, prev_node, prev_edge, dist, max_heap_ops=5_000_00):
         for i in range(self.n):
             dist[i] = INF
             prev_node[i] = -1
             prev_edge[i] = -1
         dist[s] = 0
         heap = [(0, s)]
+        heap_ops = 0
         while heap:
             d, u = heapq.heappop(heap)
+            heap_ops += 1
+            if heap_ops > max_heap_ops:
+                raise RuntimeError(
+                    f"dijkstra aborted: exceeded max heap operations={max_heap_ops}. Possible negative-cost cycles or bad potentials.")
             if d != dist[u]:
                 continue
             for ei, (v, cap, cost, rev) in enumerate(self.graph[u]):
@@ -105,7 +220,8 @@ def run_mcmf_on_instance(inst):
     S = len(suppliers)
     U = len(users)
     n = 1 + S + U + 1
-    s = 0; t = n - 1
+    s = 0;
+    t = n - 1
     mcmf = MinCostMaxFlow(n)
     supplier_id_to_index = {}
     for i, sup in enumerate(suppliers):
@@ -124,7 +240,7 @@ def run_mcmf_on_instance(inst):
         for sid, score in user.get("supplier_scores", []):
             if sid in supplier_id_to_index:
                 sup_node = supplier_id_to_index[sid]
-                mcmf.add_edge(sup_node, u_node, 10**9, -int(score))
+                mcmf.add_edge(sup_node, u_node, 10 ** 9, -int(score))
 
     mcmf.init_potential(s)
     mcmf.solve(s, t)

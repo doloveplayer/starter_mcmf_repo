@@ -26,15 +26,17 @@ import time
 import copy
 from math import log2, floor
 
-INF = 10**18
+INF = 10 ** 18
 
-from mcmf import MinCostMaxFlow  # 依赖仓库中已有文件
+from mcmf import MinCostMaxFlow, detect_negative_cycle, cancel_negative_cycles
+
 
 def highest_power_of_two_leq(x):
     if x <= 0:
         return 1
     p = 1 << (int(floor(log2(x))))
     return max(1, p)
+
 
 def dijkstra_with_threshold(graph, potential, n, s, t, threshold):
     """
@@ -67,6 +69,7 @@ def dijkstra_with_threshold(graph, potential, n, s, t, threshold):
                 prev_edge[v] = ei
                 heapq.heappush(heap, (nd, v))
     return (dist[t] < INF, dist, prev_node, prev_edge)
+
 
 def flow_scaling_solve(mcmf, s, t, initial_delta=None, verbose=False):
     """
@@ -153,6 +156,7 @@ def flow_scaling_solve(mcmf, s, t, initial_delta=None, verbose=False):
         delta //= 2
     return total_flow, total_cost
 
+
 # ------------------------------------------------------------------
 # Wrapper to build graph from instance and call flow-scaling solver
 # ------------------------------------------------------------------
@@ -202,11 +206,28 @@ def run_mcmf_flow_scaling(inst, top_k=None, verbose=False, initial_delta=None):
             if sid in supplier_id_to_index:
                 sup_idx = supplier_id_to_index[sid]
                 # large capacity (allow splitting)
-                mcmf.add_edge(sup_idx, u_idx, 10**9, -int(score))
+                mcmf.add_edge(sup_idx, u_idx, 10 ** 9, -int(score))
 
-    t0 = time.time()
-    incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)
-    t1 = time.time()
+    try:
+        t0 = time.time()
+        incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)
+        t1 = time.time()
+    except RuntimeError as err:
+        # likely dijkstra aborted due to too many heap ops => fallback: record error and try a conservative approach
+        if verbose:
+            print("[warmstart] mcmf.solve aborted:", err)
+        # Try fallback: do a short negative-cycle cancellation then try solve again with a smaller max heap ops (or exit)
+        try:
+            reduced, cnt = cancel_negative_cycles(mcmf, max_iter=500, time_limit=2.0)
+            if verbose:
+                print(f"[warmstart] after cancellation: reduced {reduced}, cycles {cnt}, retrying solve...")
+            # retry solve once
+            t0 = time.time()
+            incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)
+            t1 = time.time() - t0
+        except Exception as e2:
+            # give up and return error info
+            raise RuntimeError(f"mcmf failed after retry: {e2}") from err
 
     # reconstruct full allocations and totals from residual graph (robust)
     allocations = {u["id"]: [] for u in users}
@@ -234,4 +255,5 @@ def run_mcmf_flow_scaling(inst, top_k=None, verbose=False, initial_delta=None):
     total_flow_all = int(total_flow_all)
     total_pref_all = int(total_pref_all)
     timings = {"scaling_time": t1 - t0}
-    return {"total_flow": total_flow_all, "total_pref_score": total_pref_all, "allocations": allocations, "timings": timings}
+    return {"total_flow": total_flow_all, "total_pref_score": total_pref_all, "allocations": allocations,
+            "timings": timings}
