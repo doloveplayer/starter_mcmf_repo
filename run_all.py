@@ -11,7 +11,7 @@ try:
 except Exception:
     HAS_LP = False
 try:
-    from mcmf_warmstart import run_mcmf_with_warmstart
+    from mcmf_greedy_warm import run_mcmf_with_warmstart
 
     HAS_WARM = True
 except Exception:

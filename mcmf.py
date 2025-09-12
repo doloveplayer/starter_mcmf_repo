@@ -267,3 +267,27 @@ def run_mcmf_on_instance(inst):
                     total_pref += allocated * score_map.get((s_node, v), 0)
 
     return {"total_flow": int(total_flow_all), "total_pref_score": int(total_pref), "allocations": allocations}
+
+
+if __name__ == "__main__":
+    # Demo CLI for single instance
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--inst", required=True, help="instance json path")
+    parser.add_argument("--out", default=None, help="output json path")
+    args = parser.parse_args()
+
+    with open(args.inst, "r", encoding="utf-8") as f:
+        inst = json.load(f)
+
+    res = run_mcmf_on_instance(inst)
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fo:
+            json.dump(res, fo, indent=2, ensure_ascii=False)
+    else:
+        import pprint
+
+        pprint.pprint(res)

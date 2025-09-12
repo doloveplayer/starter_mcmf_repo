@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-mcmf_warmstart.py
+mcmf_greedy_warm.py
 
 Warm-started MCMF with partial-greedy (留白) and fallback negative-cycle cancellation.
 
@@ -233,12 +233,16 @@ def run_mcmf_with_warmstart(inst,
                             break
 
     # optional: if greedy filled everything, still attempt negative-cycle cancellation to improve cost
+    reduce_neg_t0 = None
+    reduce_neg_t = None
     try:
         # If detect negative cycle -> try to cancel some
+        reduce_neg_t0 = time.time()
         if detect_negative_cycle(mcmf, src=s):
             if verbose:
                 print("[warmstart] negative cycle detected after greedy; attempting cancellation")
             reduced, cnt = cancel_negative_cycles(mcmf, max_iter=cancel_max_iter, time_limit=cancel_time_limit)
+            reduce_neg_t = time.time() - reduce_neg_t0
             if verbose:
                 print(f"[warmstart] canceled {cnt} cycles, reduced cost by {reduced}")
     except Exception as e:
@@ -261,10 +265,13 @@ def run_mcmf_with_warmstart(inst,
         if verbose:
             print("[warmstart] mcmf.solve RuntimeError:", err, " -> attempting cycle cancellation and retry")
         try:
+            reduce_neg_t0 = time.time()
             reduced, cnt = cancel_negative_cycles(mcmf, max_iter=2 * cancel_max_iter,
                                                   time_limit=2.0 * cancel_time_limit)
+            reduce_neg_t += time.time() - reduce_neg_t0
             if verbose:
                 print(f"[warmstart] after cancellation retry: canceled {cnt}, reduced {reduced}")
+
             # retry solve once
             t_solve0 = time.time()
             mcmf.init_potential(s)
@@ -307,7 +314,8 @@ def run_mcmf_with_warmstart(inst,
         "total_flow": total_flow_all,
         "total_pref_score": total_pref_all,
         "allocations": allocations,
-        "timings": {"greedy_time": greedy_time, "mcmf_time": mcmf_time, "total_time": greedy_time + mcmf_time}
+        "timings": {"greedy_time": greedy_time, "mcmf_time": mcmf_time, "total_time": greedy_time + mcmf_time,
+                    "reduce_neg_cycle_time": reduce_neg_t}
     }
     return result
 
@@ -322,9 +330,9 @@ if __name__ == "__main__":
     parser.add_argument("--out", default=None, help="output json path")
     parser.add_argument("--topk", type=int, default=None)
     parser.add_argument("--warm", action="store_true", help="disable warm-start")
-    parser.add_argument("--max-fill", type=float, default=0.9, help="max_fill_fraction for partial greedy")
+    parser.add_argument("--max-fill", type=float, default=0.6, help="max_fill_fraction for partial greedy")
     parser.add_argument("--cancel-iter", type=int, default=200)
-    parser.add_argument("--cancel-time", type=float, default=1.0)
+    parser.add_argument("--cancel-time", type=float, default=100.0)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
