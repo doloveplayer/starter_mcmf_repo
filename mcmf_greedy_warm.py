@@ -266,8 +266,8 @@ def run_mcmf_with_warmstart(inst,
             print("[warmstart] mcmf.solve RuntimeError:", err, " -> attempting cycle cancellation and retry")
         try:
             reduce_neg_t0 = time.time()
-            reduced, cnt = cancel_negative_cycles(mcmf, max_iter=2 * cancel_max_iter,
-                                                  time_limit=2.0 * cancel_time_limit)
+            reduced, cnt = cancel_negative_cycles(mcmf, max_iter=cancel_max_iter,
+                                                  time_limit=cancel_time_limit)
             reduce_neg_t += time.time() - reduce_neg_t0
             if verbose:
                 print(f"[warmstart] after cancellation retry: canceled {cnt}, reduced {reduced}")

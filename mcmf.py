@@ -146,6 +146,32 @@ class MinCostMaxFlow:
             else:
                 self.potential[i] = 0
 
+    def init_potential_SPFA(self, s):
+        import collections
+        dist = [INF] * self.n
+        dist[s] = 0
+        queue = collections.deque([s])
+        in_queue = [False] * self.n
+        in_queue[s] = True
+        count = [0] * self.n
+        while queue:
+            u = queue.popleft()
+            in_queue[u] = False
+            for v, cap, cost, rev in self.graph[u]:
+                if cap > 0 and dist[v] > dist[u] + cost:
+                    dist[v] = dist[u] + cost
+                    if not in_queue[v]:
+                        queue.append(v)
+                        in_queue[v] = True
+                        count[v] += 1
+                        if count[v] > self.n:
+                            raise ValueError("Negative cycle detected")
+        for i in range(self.n):
+            if dist[i] < INF:
+                self.potential[i] = dist[i]
+            else:
+                self.potential[i] = 0
+
     def dijkstra(self, s, t, prev_node, prev_edge, dist, max_heap_ops=5_000_00):
         for i in range(self.n):
             dist[i] = INF

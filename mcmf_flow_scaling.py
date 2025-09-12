@@ -28,7 +28,7 @@ from math import log2, floor
 
 INF = 10 ** 18
 
-from mcmf import MinCostMaxFlow, detect_negative_cycle, cancel_negative_cycles
+from mcmf import MinCostMaxFlow, cancel_negative_cycles
 
 
 def highest_power_of_two_leq(x):
@@ -38,7 +38,134 @@ def highest_power_of_two_leq(x):
     return max(1, p)
 
 
-def dijkstra_with_threshold(graph, potential, n, s, t, threshold):
+def spfa_on_threshold(mcmf, s, delta):
+    """Run SPFA on subgraph consisting of edges with cap >= delta.
+       Returns dist list (float('inf') for unreachable).
+    """
+    from collections import deque
+    n = len(mcmf.graph)
+    INF = float('inf')
+    dist = [INF] * n
+    inq = [False] * n
+    q = deque()
+    dist[s] = 0.0
+    q.append(s)
+    inq[s] = True
+    while q:
+        u = q.popleft()
+        inq[u] = False
+        for (to, cap, cost, rev) in mcmf.graph[u]:
+            if to is None:
+                continue
+            if cap is None:
+                # if we can't find cap, conservatively treat as eligible
+                eligible = True
+            else:
+                eligible = (cap >= delta)
+            if not eligible:
+                continue
+            nd = dist[u] + (cost if cost is not None else 0.0)
+            if nd < dist[to] - 1e-12:
+                dist[to] = nd
+                if not inq[to]:
+                    q.append(to)
+                    inq[to] = True
+    return dist
+
+
+def ensure_nonneg_reduced_costs(mcmf, s, delta, verbose=False):
+    """Ensure for all edges with cap>=delta: reduced cost = cost + pot[u] - pot[v] >= 0.
+       If not, run SPFA on subgraph to rebuild potentials.
+       Returns True if potentials are OK after (or already OK), False on unexpected failure.
+    """
+    pot = getattr(mcmf, "potential", None)
+    if pot is None:
+        # create zero potentials if missing
+        m = len(mcmf.graph)
+        mcmf.potential = [0.0] * m
+        pot = mcmf.potential
+
+    # quick scan: find any violating edge
+    violating = []
+    for u, edges in enumerate(mcmf.graph):
+        for (v, cap, cost, rev) in edges:
+            if v is None:
+                continue
+            # if cap not parseable, assume eligible (conservative)
+            if cap is None:
+                eligible = True
+            else:
+                eligible = (cap >= delta)
+            if not eligible:
+                continue
+            # if cost not parseable, treat as 0
+            c = cost if (cost is not None) else 0.0
+            # ensure pot list long enough
+            if u >= len(pot) or v >= len(pot):
+                # expand pot if needed (unexpected)
+                L = max(u, v) + 1
+                while len(pot) < L:
+                    pot.append(0.0)
+            reduced = c + pot[u] - pot[v]
+            if reduced < -1e-9:
+                violating.append((u, v, cap, c, reduced))
+                # break early if verbose not desired
+                if not verbose:
+                    break
+        if violating and not verbose:
+            break
+
+    if not violating:
+        if verbose:
+            print(f"[scaling] potentials OK for delta={delta}")
+        return True
+
+    if verbose:
+        print(
+            f"[scaling] detected {len(violating)} violating edges for delta={delta}, running SPFA to rebuild potentials (sample: {violating[:5]})")
+
+    # run SPFA on subgraph to get shortest distances
+    dist = spfa_on_threshold(mcmf, s, delta)
+    # apply as new potentials for reachable nodes
+    for i in range(len(dist)):
+        if dist[i] < float('inf'):
+            mcmf.potential[i] = dist[i]
+    # re-check
+    bad = False
+    for u, edges in enumerate(mcmf.graph):
+        for (v, cap, cost) in edges:
+            if v is None:
+                continue
+            if cap is None:
+                eligible = True
+            else:
+                eligible = (cap >= delta)
+            if not eligible:
+                continue
+            c = cost if (cost is not None) else 0.0
+            if u >= len(mcmf.potential) or v >= len(mcmf.potential):
+                # if pot missing treat as zero
+                reduced = c + (mcmf.potential[u] if u < len(mcmf.potential) else 0.0) - (
+                    mcmf.potential[v] if v < len(mcmf.potential) else 0.0)
+            else:
+                reduced = c + mcmf.potential[u] - mcmf.potential[v]
+            if reduced < -1e-9:
+                bad = True
+                if verbose:
+                    print("[scaling] Still bad reduced cost on edge:", u, v, cap, c, reduced)
+                break
+        if bad:
+            break
+    if bad:
+        if verbose:
+            print("[scaling] SPFA did not fix potentials (unexpected).")
+        return False
+    if verbose:
+        print(f"[scaling] potentials rebuilt with SPFA for delta={delta}")
+    return True
+
+
+def dijkstra_with_threshold(graph, potential, n, s, t, threshold, max_heap_ops=5_000_0):
     """
     Dijkstra on reduced costs, but only traverse edges with cap >= threshold.
     graph: adjacency lists like [[(v, cap, cost, rev_idx), ...], ...]
@@ -53,8 +180,13 @@ def dijkstra_with_threshold(graph, potential, n, s, t, threshold):
     prev_edge = [-1] * n
     dist[s] = 0
     heap = [(0, s)]
+    heap_ops = 0
     while heap:
         d, u = heapq.heappop(heap)
+        heap_ops += 1
+        if heap_ops > max_heap_ops:
+            raise RuntimeError(
+                f"dijkstra aborted: exceeded max heap operations={max_heap_ops}. Possible negative-cost cycles or bad potentials.")
         if d != dist[u]:
             continue
         for ei, (v, cap, cost, rev) in enumerate(graph[u]):
@@ -80,8 +212,11 @@ def flow_scaling_solve(mcmf, s, t, initial_delta=None, verbose=False):
     """
     n = mcmf.n
 
-    # initialize potentials (Bellman-Ford) to handle negative costs
+    # # initialize potentials (Bellman-Ford) to handle negative costs
     mcmf.init_potential(s)
+
+    # initialize potentials (SPFA) to handle negative costs
+    # mcmf.init_potential_SPFA(s)
 
     # find maximal capacity on any forward edge to choose initial delta
     max_cap = 0
@@ -101,6 +236,7 @@ def flow_scaling_solve(mcmf, s, t, initial_delta=None, verbose=False):
         print(f"[scaling] max_cap={max_cap}, initial delta={delta}")
 
     while delta >= 1:
+
         if verbose:
             print(f"[scaling] start phase delta={delta}")
         # In each delta-phase, repeatedly find shortest s->t path using only edges with cap >= delta
@@ -154,13 +290,28 @@ def flow_scaling_solve(mcmf, s, t, initial_delta=None, verbose=False):
                 print(f"[scaling] augmented flow {flow} at cost per unit {path_cost}, total_flow now {total_flow}")
         # reduce scale
         delta //= 2
+        # 在相位开始处，加入：
+        ok = ensure_nonneg_reduced_costs(mcmf, s, delta, verbose=verbose)
+        if not ok:
+            # 最保守回退：对全图运行 SPFA（delta=0）
+            if verbose:
+                print("[scaling] fallback: running SPFA on full graph (delta=0)")
+            dist = spfa_on_threshold(mcmf, s, 0)
+            for i in range(len(dist)):
+                if dist[i] < float('inf'):
+                    mcmf.potential[i] = dist[i]
+            # 最后一次检查（若仍坏则抛错/记录）
+            ok2 = ensure_nonneg_reduced_costs(mcmf, s, delta, verbose=verbose)
+            if not ok2:
+                raise RuntimeError("Failed to ensure non-negative reduced costs even after fallback SPFA.")
     return total_flow, total_cost
 
 
 # ------------------------------------------------------------------
 # Wrapper to build graph from instance and call flow-scaling solver
 # ------------------------------------------------------------------
-def run_mcmf_flow_scaling(inst, top_k=None, verbose=False, initial_delta=None):
+def run_mcmf_flow_scaling(inst, top_k=None, cancel_max_iter=200,
+                          cancel_time_limit=1.0, verbose=False, initial_delta=None):
     """
     Build residual graph from instance (like run_mcmf_on_instance) and call flow_scaling_solve.
     Returns a dict similar to run_mcmf_on_instance:
@@ -208,6 +359,8 @@ def run_mcmf_flow_scaling(inst, top_k=None, verbose=False, initial_delta=None):
                 # large capacity (allow splitting)
                 mcmf.add_edge(sup_idx, u_idx, 10 ** 9, -int(score))
 
+    reduce_neg_t0 = None
+    reduce_neg_t = None
     try:
         t0 = time.time()
         incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)
@@ -215,12 +368,14 @@ def run_mcmf_flow_scaling(inst, top_k=None, verbose=False, initial_delta=None):
     except RuntimeError as err:
         # likely dijkstra aborted due to too many heap ops => fallback: record error and try a conservative approach
         if verbose:
-            print("[warmstart] mcmf.solve aborted:", err)
+            print("[flow_scaling] mcmf.solve aborted:", err)
         # Try fallback: do a short negative-cycle cancellation then try solve again with a smaller max heap ops (or exit)
         try:
-            reduced, cnt = cancel_negative_cycles(mcmf, max_iter=500, time_limit=2.0)
+            reduce_neg_t0 = time.time()
+            reduced, cnt = cancel_negative_cycles(mcmf, max_iter=cancel_max_iter, time_limit=cancel_time_limit)
+            reduce_neg_t = time.time() - reduce_neg_t0
             if verbose:
-                print(f"[warmstart] after cancellation: reduced {reduced}, cycles {cnt}, retrying solve...")
+                print(f"[flow_scaling] after cancellation: reduced {reduced}, cycles {cnt}, retrying solve...")
             # retry solve once
             t0 = time.time()
             incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)
@@ -254,6 +409,38 @@ def run_mcmf_flow_scaling(inst, top_k=None, verbose=False, initial_delta=None):
 
     total_flow_all = int(total_flow_all)
     total_pref_all = int(total_pref_all)
-    timings = {"scaling_time": t1 - t0}
+    timings = {"scaling_time": t1 - t0, "reduce_neg_cycle_time": reduce_neg_t}
     return {"total_flow": total_flow_all, "total_pref_score": total_pref_all, "allocations": allocations,
             "timings": timings}
+
+
+if __name__ == "__main__":
+    # Demo CLI for single instance
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--inst", required=True, help="instance json path")
+    parser.add_argument("--out", default=None, help="output json path")
+    parser.add_argument("--topk", type=int, default=None)
+    parser.add_argument("--cancel-iter", type=int, default=200)
+    parser.add_argument("--cancel-time", type=float, default=10.0)
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
+    with open(args.inst, "r", encoding="utf-8") as f:
+        inst = json.load(f)
+
+    res = run_mcmf_flow_scaling(inst,
+                                initial_delta=128,
+                                top_k=args.topk,
+                                cancel_max_iter=args.cancel_iter,
+                                cancel_time_limit=args.cancel_time,
+                                verbose=args.verbose)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fo:
+            json.dump(res, fo, indent=2, ensure_ascii=False)
+    else:
+        import pprint
+
+        pprint.pprint(res)

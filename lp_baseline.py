@@ -70,3 +70,26 @@ def run_lp_on_instance(inst):
             total_assigned += val
     res = {"status": status, "total_assigned": float(total_assigned), "total_pref_score": float(total_pref), "allocations": allocations}
     return res
+
+if __name__ == "__main__":
+    # Demo CLI for single instance
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--inst", required=True, help="instance json path")
+    parser.add_argument("--out", default=None, help="output json path")
+    args = parser.parse_args()
+
+    with open(args.inst, "r", encoding="utf-8") as f:
+        inst = json.load(f)
+
+    res = run_lp_on_instance(inst)
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fo:
+            json.dump(res, fo, indent=2, ensure_ascii=False)
+    else:
+        import pprint
+
+        pprint.pprint(res)
