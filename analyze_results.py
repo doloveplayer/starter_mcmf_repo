@@ -15,10 +15,8 @@ python analyze_results.py results/*.json --out summary.csv --plotdir plots --ins
 import argparse
 import glob
 import json
-import math
 import os
 from pathlib import Path
-from collections import defaultdict
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -97,16 +95,14 @@ def parse_result_file(path, instances_dir=None):
         # different LP implementation used 'total_assigned' naming
         lp_total_assigned = lp_result.get("total_assigned", None)
 
-    # # Warm MCMF
-    # warm_mcmf_result = get_nested(data, "warm_mcmf", "result", default=None)
-    # warm_time = get_nested(data, "warm_mcmf", "time", default=None)
-    # warm_total_pref = None
-    # warm_total_assigned = None
-    # warm_timings = None
-    # if isinstance(warm_mcmf_result, dict):
-    #     warm_total_pref = warm_mcmf_result.get("total_pref_score", None)
-    #     warm_total_assigned = warm_mcmf_result.get("total_flow", None)
-    #     warm_timings = warm_mcmf_result.get("timings", None)
+    # Warm MCMF
+    warm_mcmf_result = get_nested(data, "warm_mcmf", "result", default=None)
+    warm_time = get_nested(data, "warm_mcmf", "time", default=None)
+    warm_total_pref = None
+    warm_total_assigned = None
+    if isinstance(warm_mcmf_result, dict):
+        warm_total_pref = warm_mcmf_result.get("total_pref_score", None)
+        warm_total_assigned = warm_mcmf_result.get("total_flow", None)
 
     # optionally compute total_demand by loading instance file
     total_demand = None
@@ -127,11 +123,9 @@ def parse_result_file(path, instances_dir=None):
         "lp_total_pref": try_float(lp_total_pref),
         "lp_total_assigned": try_float(lp_total_assigned),
         "lp_time": try_float(lp_time),
-        # "warm_mcmf_total_pref": try_float(warm_total_pref),
-        # "warm_mcmf_total_assigned": try_float(warm_total_assigned),
-        # "warm_mcmf_time": try_float(warm_timings.total_time if warm_timings is not None else None),
-        # "warm_mcmf_greed_time": try_float(warm_timings.greedy_time if warm_timings is not None else None),
-        # "warm_mcmf_mcmf_time": try_float(warm_timings.mcmf_time if warm_timings is not None else None),
+        "warm_mcmf_total_pref": try_float(warm_total_pref),
+        "warm_mcmf_total_assigned": try_float(warm_total_assigned),
+        "warm_mcmf_time": try_float(warm_time),
         "total_demand": try_float(total_demand)
     }
 
@@ -156,21 +150,21 @@ def aggregate_results(rows):
             lambda r: safe_divide(r.get("greedy_total_assigned"), r.get("total_demand")), axis=1)
         df["lp_fulfillment"] = df.apply(lambda r: safe_divide(r.get("lp_total_assigned"), r.get("total_demand")),
                                         axis=1)
-        # df["warm_mcmf_fulfillment"] = df.apply(
-        #     lambda r: safe_divide(r.get("warm_mcmf_total_assigned"), r.get("total_demand")), axis=1)
+        df["warm_mcmf_fulfillment"] = df.apply(
+            lambda r: safe_divide(r.get("warm_mcmf_total_assigned"), r.get("total_demand")), axis=1)
     else:
         df["mcmf_fulfillment"] = None
         df["greedy_fulfillment"] = None
         df["lp_fulfillment"] = None
-        # df["warm_mcmf_fulfillment"] = None
+        df["warm_mcmf_fulfillment"] = None
 
     # improvement percent over greedy and lp
-    df["impr_over_greedy_pct"] = df.apply(
+    df["pref_greedy_vs_mcmf"] = df.apply(
         lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("greedy_total_pref")), axis=1)
-    df["dis_between_lp_pct"] = df.apply(lambda r: percent_improvement(r.get("lp_total_pref"), r.get("mcmf_total_pref")),
-                                        axis=1)
-    # df["dis_between_warm_pct"] = df.apply(
-    #     lambda r: percent_improvement(r.get("warm_mcmf_total_pref"), r.get("mcmf_total_pref")), axis=1)
+    df["pref_lp_vs_mcmf"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("lp_total_pref")),
+                                     axis=1)
+    df["pref_warm_vs_mcmf"] = df.apply(
+        lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("warm_mcmf_total_pref")), axis=1)
 
     return df
 
@@ -321,6 +315,7 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
     else:
         plt.close()
 
+
 def statistical_tests(df):
     """
     可选的配对 t 检验（若 scipy 可用）：
@@ -391,8 +386,14 @@ def main():
             print(f"Warning: failed to parse {pth}: {e}")
 
     df = aggregate_results(rows)
-    save_csv(df, args.out)
 
+    if "total_demand" in df.columns:
+        df = df.sort_values(by="total_demand", key=lambda col: col.fillna(float("inf"))).reset_index(drop=True)
+        print(f"Sorted {len(df)} instances by total_demand (ascending).")
+    else:
+        print("Warning: 'total_demand' column not available — results will not be sorted by demand.")
+
+    save_csv(df, args.out)
     # print brief summary to console
     print("\nSummary statistics (means across instances):")
     summary = df.mean(numeric_only=True).to_dict()

@@ -180,7 +180,7 @@
         ]
       }
     },
-    "time": 0.003988027572631836
+    "time": 0.002494335174560547
   },
   "greedy": {
     "result": {
@@ -541,33 +541,41 @@
         ]
       }
     },
-    "time": 0.7131869792938232
+    "time": 0.24621200561523438
   },
   "warm_mcmf": {
     "result": {
       "total_flow": 477,
-      "total_pref_score": 34129,
+      "total_pref_score": 35890,
       "allocations": {
         "u0": [
           [
             "s6",
-            6
+            3
+          ],
+          [
+            "s9",
+            3
           ]
         ],
         "u1": [
           [
-            "s0",
-            6
+            "s6",
+            16
           ],
           [
-            "s6",
-            21
+            "s0",
+            11
           ]
         ],
         "u2": [
           [
             "s0",
-            25
+            16
+          ],
+          [
+            "s8",
+            9
           ]
         ],
         "u3": [
@@ -579,23 +587,39 @@
         "u4": [
           [
             "s0",
-            11
+            6
+          ],
+          [
+            "s3",
+            3
+          ],
+          [
+            "s9",
+            2
           ]
         ],
         "u5": [
           [
+            "s6",
+            8
+          ],
+          [
             "s8",
-            41
+            27
           ]
         ],
         "u6": [
           [
             "s1",
-            24
+            15
           ],
           [
             "s8",
-            18
+            11
+          ],
+          [
+            "s9",
+            16
           ]
         ],
         "u7": [
@@ -619,45 +643,41 @@
         "u10": [
           [
             "s2",
-            11
+            6
+          ],
+          [
+            "s9",
+            5
           ]
         ],
         "u11": [
           [
-            "s7",
-            10
-          ],
-          [
             "s8",
-            37
+            47
           ]
         ],
         "u12": [
           [
             "s2",
-            2
-          ],
-          [
-            "s4",
-            11
-          ],
-          [
-            "s5",
-            19
+            7
           ],
           [
             "s7",
-            13
+            14
+          ],
+          [
+            "s4",
+            9
           ]
         ],
         "u13": [
           [
             "s5",
-            19
+            21
           ],
           [
             "s9",
-            17
+            15
           ]
         ],
         "u14": [
@@ -668,14 +688,18 @@
         ],
         "u15": [
           [
-            "s0",
-            4
+            "s8",
+            2
           ]
         ],
         "u16": [
           [
+            "s7",
+            9
+          ],
+          [
             "s9",
-            16
+            7
           ]
         ],
         "u17": [
@@ -686,14 +710,22 @@
         ],
         "u18": [
           [
+            "s5",
+            7
+          ],
+          [
             "s9",
-            13
+            6
           ]
         ],
         "u19": [
           [
             "s0",
-            4
+            2
+          ],
+          [
+            "s4",
+            2
           ]
         ],
         "u20": [
@@ -705,39 +737,47 @@
         "u21": [
           [
             "s0",
-            5
+            3
+          ],
+          [
+            "s9",
+            2
           ]
         ],
         "u22": [
           [
             "s0",
-            12
+            29
           ],
           [
             "s9",
-            16
+            6
           ]
         ],
         "u23": [
           [
-            "s3",
-            3
+            "s5",
+            10
+          ],
+          [
+            "s1",
+            9
           ]
         ]
       },
       "timings": {
         "greedy_time": 0.0,
-        "mcmf_time": 0.0,
-        "total_time": 0.0
+        "mcmf_time": 0.002499818801879883,
+        "total_time": 0.002499818801879883,
+        "reduce_neg_cycle_time": 0.0
+      },
+      "breakdown": {
+        "greedy_assigned": 291,
+        "greedy_pref_score": 22765,
+        "mcmf_assigned": 186,
+        "mcmf_pref_score": 13125
       }
     },
-    "time": 0.0009970664978027344
-  },
-  "scaling_mcmf": {
-    "result": {
-      "error": "",
-      "traceback": "Traceback (most recent call last):\n  File \"D:\\hyh\\starter_mcmf_repo\\run_all.py\", line 66, in run_instance\n    scaling_mcmf_res = run_mcmf_flow_scaling(inst, top_k=topk, verbose=False)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 208, in run_mcmf_flow_scaling\n    incr_flow, incr_cost = flow_scaling_solve(mcmf, s, t, initial_delta, verbose=verbose)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 106, in flow_scaling_solve\n    reachable, dist, prev_node, prev_edge = dijkstra_with_threshold(mcmf.graph, mcmf.potential, n, s, t, delta)\n  File \"D:\\hyh\\starter_mcmf_repo\\mcmf_flow_scaling.py\", line 68, in dijkstra_with_threshold\n    heapq.heappush(heap, (nd, v))\nMemoryError\n"
-    },
-    "time": null
+    "time": 0.003496408462524414
   }
 }

@@ -59,23 +59,22 @@ def run_instance(path, args):
         except Exception as e:
             warm_mcmf_res = {"error": str(e), "traceback": traceback.format_exc()}
             t_warm_mcmf = None
-    if HAS_SCALING:
-        try:
-            topk = args.topk
-            t_scaling_mcmf0 = time.time()
-            scaling_mcmf_res = run_mcmf_flow_scaling(inst, top_k=topk, verbose=False)
-            t_scaling_mcmf1 = time.time()
-            t_scaling_mcmf = t_scaling_mcmf1 - t_scaling_mcmf0
-        except Exception as e:
-            scaling_mcmf_res = {"error": str(e), "traceback": traceback.format_exc()}
-            t_scaling_mcmf = None
+    # if HAS_SCALING:
+    #     try:
+    #         topk = args.topk
+    #         t_scaling_mcmf0 = time.time()
+    #         scaling_mcmf_res = run_mcmf_flow_scaling(inst, top_k=topk, verbose=False)
+    #         t_scaling_mcmf1 = time.time()
+    #         t_scaling_mcmf = t_scaling_mcmf1 - t_scaling_mcmf0
+    #     except Exception as e:
+    #         scaling_mcmf_res = {"error": str(e), "traceback": traceback.format_exc()}
+    #         t_scaling_mcmf = None
 
     out = {"instance": name, "meta": inst.get("meta", {}),
            "mcmf": {"result": mres, "time": t1 - t0},
            "greedy": {"result": gres, "time": t2 - t1},
            "lp": {"result": lp_res, "time": lp_time},
-           "warm_mcmf": {"result": warm_mcmf_res, "time": t_warm_mcmf},
-           "scaling_mcmf": {"result": scaling_mcmf_res, "time": t_scaling_mcmf}}
+           "warm_mcmf": {"result": warm_mcmf_res, "time": t_warm_mcmf}}
     os.makedirs(args.outdir, exist_ok=True)
     outpath = os.path.join(args.outdir, f"{name}_results.json")
     with open(outpath, "w", encoding="utf-8") as f:
