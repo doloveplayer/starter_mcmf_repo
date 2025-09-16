@@ -4,7 +4,7 @@ analyze_results.py
 
 功能：
 - 读取多个 results/*.json（由 run_all.py 产生），汇总为 CSV；
-- 生成对比图表（总偏好、运行时间、满足率等）并保存为 PNG；
+- 生成对比图表（总偏好、运行时间、满足率、内存开销等）并保存为 PNG；
 - 可选：通过 --instances-dir 读取原始实例以计算总需求 (total_demand)；
 - 可选：如果安装了 scipy，会对 mcmf vs greedy / lp 做配对 t 检验。
 
@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
-
 # optional
 try:
     from scipy import stats
@@ -28,6 +27,36 @@ try:
     HAS_SCIPY = True
 except Exception:
     HAS_SCIPY = False
+
+
+def load_instance_user_needs(instances_dir, instance_name):
+    """
+    从 instances_dir/instance_name.json 中加载 per-user needs，
+    返回 dict {user_id: need}（need 为 int），若失败返回 None。
+    """
+    if instances_dir is None:
+        return None
+    p = Path(instances_dir) / f"{instance_name}.json"
+    if not p.exists():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            inst = json.load(f)
+        needs = {}
+        for u in inst.get("users", []):
+            uid = u.get("id")
+            need = u.get("need", None)
+            if uid is not None and need is not None:
+                try:
+                    needs[str(uid)] = int(need)
+                except Exception:
+                    try:
+                        needs[str(uid)] = int(float(need))
+                    except Exception:
+                        needs[str(uid)] = None
+        return needs
+    except Exception:
+        return None
 
 
 def load_instance_total_demand(instances_dir, instance_name):
@@ -49,14 +78,182 @@ def load_instance_total_demand(instances_dir, instance_name):
         return None
 
 
+def extract_alloc_map(result_dict):
+    """
+    从 result_dict（例如 data['mcmf']['result']）中提取 user -> allocated_amount 映射。
+    返回 (alloc_map: dict user_id->total_allocated_float, total_users_in_alloc: int)
+    若无法解析则返回 (None, None)
+    """
+    if not isinstance(result_dict, dict):
+        return None, None
+
+    allocs = result_dict.get("allocations") or result_dict.get("allocation") or result_dict.get("alloc") or None
+    if allocs is None:
+        # 尝试从任何 dict 字段找到类似 allocations 的结构
+        for k, v in result_dict.items():
+            if isinstance(v, dict):
+                # heuristics: dict of user_id -> list/tuple
+                sample_vals = list(v.values())[:3]
+                if sample_vals and all(isinstance(x, (list, tuple, dict)) for x in sample_vals):
+                    allocs = v
+                    break
+        if allocs is None:
+            return None, None
+
+    # 标准化为 dict user_id -> list
+    if isinstance(allocs, list):
+        alloc_map = {}
+        # 常见 list 元素类型： (user_id, [(sup,amt),...]) 或 dict {'user':id,'alloc':[...] }
+        for item in allocs:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                uid = item[0]
+                lst = item[1]
+                alloc_map[str(uid)] = lst
+            elif isinstance(item, dict):
+                uid = item.get("user") or item.get("uid") or item.get("id")
+                lst = item.get("allocations") or item.get("alloc") or item.get("assigned") or item.get("allocation")
+                if uid is not None and lst is not None:
+                    alloc_map[str(uid)] = lst
+        if not alloc_map:
+            return None, None
+    elif isinstance(allocs, dict):
+        alloc_map = {str(k): v for k, v in allocs.items()}
+    else:
+        return None, None
+
+    # 汇总每个 user 的总分配量（将 list -> 总和）
+    out_map = {}
+    for uid, lst in alloc_map.items():
+        if not lst:
+            out_map[str(uid)] = 0.0
+            continue
+        # 如果 lst 是数值（极少见），直接用
+        if isinstance(lst, (int, float)):
+            out_map[str(uid)] = float(lst)
+            continue
+        total = 0.0
+        for entry in lst:
+            amt = 0.0
+            if entry is None:
+                continue
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                # (sup, amt, ...)
+                try:
+                    amt = float(entry[1])
+                except Exception:
+                    try:
+                        amt = float(str(entry[1]))
+                    except Exception:
+                        amt = 0.0
+            elif isinstance(entry, dict):
+                # try common keys
+                found = False
+                for key in ("amt", "amount", "assigned", "quantity", "flow"):
+                    if key in entry:
+                        try:
+                            amt = float(entry[key])
+                            found = True
+                            break
+                        except Exception:
+                            amt = 0.0
+                if not found:
+                    # try to pick first numeric value
+                    for v in entry.values():
+                        if isinstance(v, (int, float)):
+                            amt = float(v)
+                            break
+            else:
+                try:
+                    amt = float(entry)
+                except Exception:
+                    amt = 0.0
+            total += amt
+        out_map[str(uid)] = total
+
+    return out_map, len(out_map)
+
+
+def compute_satisfaction_stats(alloc_map, user_needs_map, total_users_from_meta=None):
+    """
+    给定 alloc_map: user_id->allocated_amount (float)
+          user_needs_map: user_id->need (int)  或 None
+    计算满足率 >=100%, >=80%, >=60% 的用户数量与占比。
+    如果 user_needs_map 为 None 则返回 (None..)
+    返回 dict 包含 counts 和 shares，若无法计算则值为 None。
+    """
+    if alloc_map is None:
+        return {
+            "full_count": None, "full_share": None,
+            "p80_count": None, "p80_share": None,
+            "p60_count": None, "p60_share": None,
+            "total_users_in_alloc": None
+        }
+    # 如果没有 user_needs_map，无法计算准确比例
+    if user_needs_map is None:
+        return {
+            "full_count": None, "full_share": None,
+            "p80_count": None, "p80_share": None,
+            "p60_count": None, "p60_share": None,
+            "total_users_in_alloc": len(alloc_map)
+        }
+
+    full = 0
+    p80 = 0
+    p60 = 0
+    total_users = 0
+    for uid, alloc in alloc_map.items():
+        total_users += 1
+        need = user_needs_map.get(str(uid))
+        if need is None or need == 0:
+            # skip users with unknown or zero need
+            continue
+        ratio = float(alloc) / float(need)
+        if ratio >= 1.0:
+            full += 1
+        if ratio >= 0.8:
+            p80 += 1
+        if ratio >= 0.6:
+            p60 += 1
+
+    # denom for share: prefer total_users_from_meta if provided and >0, else number of users with known need
+    denom = None
+    if total_users_from_meta is not None:
+        try:
+            if int(total_users_from_meta) > 0:
+                denom = int(total_users_from_meta)
+        except Exception:
+            denom = None
+    if denom is None:
+        # count users with known need among alloc_map
+        known_users = sum(1 for uid in alloc_map.keys() if user_needs_map.get(str(uid)) is not None)
+        denom = known_users if known_users > 0 else None
+
+    def share(count):
+        if denom is None:
+            return None
+        return float(count) / float(denom)
+
+    return {
+        "full_count": int(full), "full_share": share(full),
+        "p80_count": int(p80), "p80_share": share(p80),
+        "p60_count": int(p60), "p60_share": share(p60),
+        "total_users_in_alloc": len(alloc_map)
+    }
+
+
 def parse_result_file(path, instances_dir=None):
     """
-    解析单个 result JSON 文件，返回一字典包含我们关心的字段（可能为 None）
+    解析单个 result JSON 文件，返回一字典包含我们关心的字段（可能为 None）。
+    现在额外统计每种方法中：未被分配用户数/占比，以及满足 >=100%, >=80%, >=60% 的用户数/占比。
+    并将每个算法的运行时间与内存峰值作为单独的字段返回（mcmf_time, mcmf_peak_rss_mb, ...）。
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     name = data.get("instance", Path(path).stem)
     meta = data.get("meta", {})
+
+    # try load per-user needs from instances_dir (preferred)
+    user_needs_map = load_instance_user_needs(instances_dir, name)
 
     # helper to safely extract nested values
     def get_nested(d, *keys, default=None):
@@ -67,67 +264,132 @@ def parse_result_file(path, instances_dir=None):
             cur = cur.get(k, None)
         return cur if cur is not None else default
 
-    # MCMF
+    # ---- helper to get counts using functions above ----
+    def analyze_method(result_dict):
+        # unserved count/share (reuse logic)
+        alloc_map, total_users_in_alloc = extract_alloc_map(result_dict)
+        # unserved: users with alloc == 0
+        if alloc_map is None:
+            unserved_count = None
+            unserved_share = None
+        else:
+            unserved_count = sum(1 for v in alloc_map.values() if (v is None or float(v) <= 0.0))
+            # denom for share: prefer meta['U'] if present
+            denom = None
+            try:
+                denom = int(meta.get("U")) if meta.get("U") is not None else None
+            except Exception:
+                denom = None
+            if denom is None:
+                denom = total_users_in_alloc if total_users_in_alloc > 0 else None
+            unserved_share = None if denom is None else float(unserved_count) / float(denom)
+
+        # satisfaction levels (needs necessary)
+        sat_stats = compute_satisfaction_stats(alloc_map, user_needs_map, total_users_from_meta=meta.get("U"))
+
+        # total_pref / total_flow extraction (if present)
+        total_pref = None
+        total_flow = None
+        if isinstance(result_dict, dict):
+            total_pref = result_dict.get("total_pref_score") or result_dict.get("total_pref") or result_dict.get("pref") or None
+            # some results record 'total_assigned' or 'total_flow'
+            total_flow = result_dict.get("total_flow") or result_dict.get("total_assigned") or result_dict.get("assigned") or None
+
+        # return aggregated stats
+        return {
+            "unserved_count": try_int(unserved_count),
+            "unserved_share": try_float(unserved_share),
+            "full_count": try_int(sat_stats["full_count"]),
+            "full_share": try_float(sat_stats["full_share"]),
+            "p80_count": try_int(sat_stats["p80_count"]),
+            "p80_share": try_float(sat_stats["p80_share"]),
+            "p60_count": try_int(sat_stats["p60_count"]),
+            "p60_share": try_float(sat_stats["p60_share"]),
+            "total_pref": try_float(total_pref),
+            "total_flow": try_float(total_flow)
+        }
+
+    # parse each method's result AND time & memory (try common locations)
     mcmf_result = get_nested(data, "mcmf", "result", default=None)
-    mcmf_time = get_nested(data, "mcmf", "time", default=None)
-    mcmf_total_pref = None
-    mcmf_total_flow = None
-    if isinstance(mcmf_result, dict):
-        mcmf_total_pref = mcmf_result.get("total_pref_score", None)
-        mcmf_total_flow = mcmf_result.get("total_flow", None)
+    mcmf_time = get_nested(data, "mcmf", "time", default=None) or get_nested(data, "mcmf", "timings", "total_time", default=None)
+    mcmf_peak_rss = get_nested(data, "mcmf", "peak_rss_mb", default=None)
+    mcmf_tracemalloc = get_nested(data, "mcmf", "py_tracemalloc_peak_mb", default=None)
+    m = analyze_method(mcmf_result)
 
-    # Greedy
     greedy_result = get_nested(data, "greedy", "result", default=None)
-    greedy_time = get_nested(data, "greedy", "time", default=None)
-    greedy_total_pref = None
-    greedy_total_assigned = None
-    if isinstance(greedy_result, dict):
-        greedy_total_pref = greedy_result.get("total_pref_score", None)
-        greedy_total_assigned = greedy_result.get("total_assigned", None)
+    greedy_time = get_nested(data, "greedy", "time", default=None) or get_nested(data, "greedy", "timings", "total_time", default=None)
+    greedy_peak_rss = get_nested(data, "greedy", "peak_rss_mb", default=None)
+    greedy_tracemalloc = get_nested(data, "greedy", "py_tracemalloc_peak_mb", default=None)
+    g = analyze_method(greedy_result)
 
-    # LP baseline (may be None if pulp not installed)
     lp_result = get_nested(data, "lp", "result", default=None)
-    lp_time = get_nested(data, "lp", "time", default=None)
-    lp_total_pref = None
-    lp_total_assigned = None
-    if isinstance(lp_result, dict):
-        lp_total_pref = lp_result.get("total_pref_score", None)
-        # different LP implementation used 'total_assigned' naming
-        lp_total_assigned = lp_result.get("total_assigned", None)
+    lp_time = get_nested(data, "lp", "time", default=None) or get_nested(data, "lp", "timings", "total_time", default=None)
+    lp_peak_rss = get_nested(data, "lp", "peak_rss_mb", default=None)
+    lp_tracemalloc = get_nested(data, "lp", "py_tracemalloc_peak_mb", default=None)
+    l = analyze_method(lp_result)
 
-    # Warm MCMF
-    warm_mcmf_result = get_nested(data, "warm_mcmf", "result", default=None)
-    warm_time = get_nested(data, "warm_mcmf", "time", default=None)
-    warm_total_pref = None
-    warm_total_assigned = None
-    if isinstance(warm_mcmf_result, dict):
-        warm_total_pref = warm_mcmf_result.get("total_pref_score", None)
-        warm_total_assigned = warm_mcmf_result.get("total_flow", None)
+    warm_result = get_nested(data, "warm_mcmf", "result", default=None)
+    warm_time = get_nested(data, "warm_mcmf", "time", default=None) or get_nested(data, "warm_mcmf", "timings", "total_time", default=None)
+    warm_peak_rss = get_nested(data, "warm_mcmf", "peak_rss_mb", default=None)
+    warm_tracemalloc = get_nested(data, "warm_mcmf", "py_tracemalloc_peak_mb", default=None)
+    w = analyze_method(warm_result)
 
-    # optionally compute total_demand by loading instance file
+    # optionally compute total_demand by loading instance file (as before)
     total_demand = None
     if instances_dir is not None:
         total_demand = load_instance_total_demand(instances_dir, name)
 
-    return {
+    # now build returned row (keys chosen to be consistent / descriptive)
+    row = {
         "instance": name,
         "S": meta.get("S"),
         "U": meta.get("U"),
         "avg_degree": meta.get("avg_degree"),
-        "mcmf_total_pref": try_float(mcmf_total_pref),
-        "mcmf_total_flow": try_float(mcmf_total_flow),
+        # mcmf
+        "mcmf_total_pref": m["total_pref"],
+        "mcmf_total_flow": m["total_flow"],
         "mcmf_time": try_float(mcmf_time),
-        "greedy_total_pref": try_float(greedy_total_pref),
-        "greedy_total_assigned": try_float(greedy_total_assigned),
+        "mcmf_peak_rss_mb": try_float(mcmf_peak_rss),
+        "mcmf_py_tracemalloc_peak_mb": try_float(mcmf_tracemalloc),
+        "mcmf_unserved_share": m["unserved_share"],
+        "mcmf_full_share": m["full_share"],
+        "mcmf_p80_share": m["p80_share"],
+        "mcmf_p60_share": m["p60_share"],
+        # greedy
+        "greedy_total_pref": g["total_pref"],
+        "greedy_total_assigned": g["total_flow"],
         "greedy_time": try_float(greedy_time),
-        "lp_total_pref": try_float(lp_total_pref),
-        "lp_total_assigned": try_float(lp_total_assigned),
+        "greedy_peak_rss_mb": try_float(greedy_peak_rss),
+        "greedy_py_tracemalloc_peak_mb": try_float(greedy_tracemalloc),
+        "greedy_unserved_share": g["unserved_share"],
+        "greedy_full_share": g["full_share"],
+        "greedy_p80_share": g["p80_share"],
+        "greedy_p60_share": g["p60_share"],
+        # lp
+        "lp_total_pref": l["total_pref"],
+        "lp_total_assigned": l["total_flow"],
         "lp_time": try_float(lp_time),
-        "warm_mcmf_total_pref": try_float(warm_total_pref),
-        "warm_mcmf_total_assigned": try_float(warm_total_assigned),
+        "lp_peak_rss_mb": try_float(lp_peak_rss),
+        "lp_py_tracemalloc_peak_mb": try_float(lp_tracemalloc),
+        "lp_unserved_share": l["unserved_share"],
+        "lp_full_share": l["full_share"],
+        "lp_p80_share": l["p80_share"],
+        "lp_p60_share": l["p60_share"],
+        # warm
+        "warm_mcmf_total_pref": w["total_pref"],
+        "warm_mcmf_total_assigned": w["total_flow"],
         "warm_mcmf_time": try_float(warm_time),
+        "warm_mcmf_peak_rss_mb": try_float(warm_peak_rss),
+        "warm_mcmf_py_tracemalloc_peak_mb": try_float(warm_tracemalloc),
+        "warm_mcmf_unserved_count": w["unserved_count"],
+        "warm_mcmf_unserved_share": w["unserved_share"],
+        "warm_mcmf_full_share": w["full_share"],
+        "warm_mcmf_p80_share": w["p80_share"],
+        "warm_mcmf_p60_share": w["p60_share"],
+        # meta
         "total_demand": try_float(total_demand)
     }
+    return row
 
 
 def try_float(x):
@@ -135,6 +397,15 @@ def try_float(x):
         return None
     try:
         return float(x)
+    except Exception:
+        return None
+
+
+def try_int(x):
+    if x is None:
+        return None
+    try:
+        return int(x)
     except Exception:
         return None
 
@@ -194,7 +465,7 @@ def save_csv(df, out_path):
     print(f"Wrote CSV summary to {out_path}")
 
 
-def plot_comparisons(df, plotdir, max_instances_for_bar=20):
+def plot_comparisons(df, plotdir, max_instances_for_bar=50):
     os.makedirs(plotdir, exist_ok=True)
     # determine methods available
     methods = ["mcmf", "greedy", "lp", "warm_mcmf"]
@@ -213,7 +484,7 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
 
     # 1) Total preference comparison: grouped bar per instance (or mean+std if many)
     pref_cols = [f"{m}_total_pref" for m in available]
-    if ninst <= max_instances_for_bar:
+    if ninst <= max_instances_for_bar and pref_cols:
         ax = df[pref_cols].plot.bar(figsize=(max(8, ninst * 0.6), 6))
         ax.set_title("Total preference (higher is better) - per instance")
         ax.set_xlabel("Instance (index)")
@@ -223,7 +494,7 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
         plt.savefig(fpath)
         plt.close()
         print("Saved", fpath)
-    else:
+    elif pref_cols:
         # aggregated mean+std
         stats_df = df[pref_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
         stats_df["method"] = stats_df["method"].str.replace("_total_pref", "")
@@ -239,9 +510,11 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
 
     # 2) Runtime comparison
     time_cols = [f"{m}_time" for m in available]
-    if df[time_cols].notnull().any().any():
-        if ninst <= max_instances_for_bar:
-            ax = df[time_cols].plot.bar(figsize=(max(8, ninst * 0.6), 6))
+    if any((c in df.columns and df[c].notnull().any()) for c in time_cols):
+        # only keep cols that exist and have any non-null
+        time_cols_exist = [c for c in time_cols if c in df.columns and df[c].notnull().any()]
+        if ninst <= max_instances_for_bar and time_cols_exist:
+            ax = df[time_cols_exist].plot.bar(figsize=(max(8, ninst * 0.6), 6))
             ax.set_title("Runtime (seconds) - per instance")
             ax.set_xlabel("Instance (index)")
             ax.set_ylabel("Time (s)")
@@ -250,8 +523,8 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
             plt.savefig(fpath)
             plt.close()
             print("Saved", fpath)
-        else:
-            stats_df = df[time_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
+        elif time_cols_exist:
+            stats_df = df[time_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
             stats_df["method"] = stats_df["method"].str.replace("_time", "")
             fig, ax = plt.subplots(figsize=(8, 6))
             ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
@@ -263,8 +536,36 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
             plt.close()
             print("Saved", fpath)
 
-    # 3) Fulfillment rate if available
-    if df["mcmf_fulfillment"].notnull().any():
+    # 3) Memory (peak RSS) comparison
+    mem_cols = [f"{m}_peak_rss_mb" for m in available]
+    # check existence
+    if any((c in df.columns and df[c].notnull().any()) for c in mem_cols):
+        mem_cols_exist = [c for c in mem_cols if c in df.columns and df[c].notnull().any()]
+        if ninst <= max_instances_for_bar and mem_cols_exist:
+            ax = df[mem_cols_exist].plot.bar(figsize=(max(8, ninst * 0.6), 6))
+            ax.set_title("Peak memory (RSS, MB) - per instance")
+            ax.set_xlabel("Instance (index)")
+            ax.set_ylabel("Peak RSS (MB)")
+            plt.tight_layout()
+            fpath = os.path.join(plotdir, "memory_per_instance.png")
+            plt.savefig(fpath)
+            plt.close()
+            print("Saved", fpath)
+        elif mem_cols_exist:
+            stats_df = df[mem_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
+            stats_df["method"] = stats_df["method"].str.replace("_peak_rss_mb", "")
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
+            ax.set_title("Mean peak memory (RSS MB) ± std (across instances)")
+            ax.set_ylabel("Peak RSS (MB)")
+            plt.tight_layout()
+            fpath = os.path.join(plotdir, "memory_mean.png")
+            plt.savefig(fpath)
+            plt.close()
+            print("Saved", fpath)
+
+    # 4) Fulfillment rate if available
+    if "mcmf_fulfillment" in df.columns and df["mcmf_fulfillment"].notnull().any():
         ful_cols = [c for c in ["mcmf_fulfillment", "greedy_fulfillment", "lp_fulfillment", "warm_mcmf_fulfillment"] if
                     c in df.columns and df[c].notnull().any()]
         if len(ful_cols) > 0:
@@ -292,14 +593,16 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=20):
                 plt.close()
                 print("Saved", fpath)
 
-    # 4) Scatter: runtime vs total_pref for each method (if time data exists)
+    # 5) Scatter: runtime vs total_pref for each method (if time data exists)
     fig, ax = plt.subplots(figsize=(8, 6))
     plotted = False
     colors = {"mcmf": "C0", "greedy": "C1", "lp": "C2", "warm_mcmf": "C3"}
     for m in available:
-        x = df[f"{m}_time"]
-        y = df[f"{m}_total_pref"]
-        if x.notnull().any() and y.notnull().any():
+        xt = f"{m}_time"
+        yt = f"{m}_total_pref"
+        if xt in df.columns and yt in df.columns and df[xt].notnull().any() and df[yt].notnull().any():
+            x = df[xt]
+            y = df[yt]
             ax.scatter(x, y, label=m, color=colors.get(m, "C0"), alpha=0.7)
             plotted = True
     if plotted:

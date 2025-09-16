@@ -2,3 +2,6 @@
 /__pycache__
 /tempTest
 /single
+/instances_bulk
+/bulk_results
+/bulk_analyze

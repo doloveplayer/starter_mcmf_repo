@@ -1,4 +1,5 @@
 pandas
 matplotlib
+psutil
 pulp
 scipy
