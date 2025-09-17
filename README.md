@@ -27,6 +27,10 @@ python run_all.py instances/test.json --outdir results --topk 20 --warm --recurs
 # 数据分析
 python analyze_results.py results/*.json --out summary.csv --plotdir plots --instances-dir instances
 
+# 可视化网络结构
+python vis_mcmf.py --inst instances/test_S3_U6_DEG3.json --hide-flow --out outdir
+
+
 ```
 
 ## Summary中的指标
