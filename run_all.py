@@ -27,6 +27,13 @@ try:
     HAS_HUNGARIAN = True
 except Exception:
     HAS_HUNGARIAN = False
+try:
+    from pso_allocator import run_pso
+
+    HAS_PSO = True
+except Exception:
+    HAS_PSO = False
+
 
 def run_instance(path, args):
     """
@@ -173,7 +180,8 @@ def run_instance(path, args):
         try:
             lp_wrapper = measure_call(run_lp_on_instance, inst)
         except Exception as e:
-            lp_wrapper = {"result": {"error": str(e)}, "time": None, "peak_rss_mb": None, "py_tracemalloc_peak_mb": None,
+            lp_wrapper = {"result": {"error": str(e)}, "time": None, "peak_rss_mb": None,
+                          "py_tracemalloc_peak_mb": None,
                           "error": traceback.format_exc()}
     else:
         lp_wrapper = {"result": None, "time": None, "peak_rss_mb": None, "py_tracemalloc_peak_mb": None, "error": None}
@@ -190,13 +198,26 @@ def run_instance(path, args):
                             "py_tracemalloc_peak_mb": None, "error": traceback.format_exc()}
 
     # hungarian 可选
-    hungarian_wrapper = {"result": None, "time": None, "peak_rss_mb": None, "py_tracemalloc_peak_mb": None, "error": None}
+    hungarian_wrapper = {"result": None, "time": None, "peak_rss_mb": None, "py_tracemalloc_peak_mb": None,
+                         "error": None}
     if HAS_HUNGARIAN and args.hungarian:
         try:
             hungarian_wrapper = measure_call(hungarian_allocation, inst, max_expand=5000, verbose=True)
         except Exception as e:
-            hungarian_wrapper = {"result": {"error": str(e)}, "time": None, "peak_rss_mb": None, "py_tracemalloc_peak_mb": None,
+            hungarian_wrapper = {"result": {"error": str(e)}, "time": None, "peak_rss_mb": None,
+                                 "py_tracemalloc_peak_mb": None,
                                  "error": traceback.format_exc()}
+
+    # pso 可选
+    pso_wrapper = {"result": None, "time": None, "peak_rss_mb": None, "py_tracemalloc_peak_mb": None, "error": None}
+    if HAS_PSO and args.pso:
+        try:
+            pso_wrapper = measure_call(run_pso, inst, top_k=None, particles=50, iters=200, w_inertia=0.6, c1=1.5,
+                                       c2=1.5, seed=42, verbose=False)
+        except Exception as e:
+            pso_wrapper = {"result": {"error": str(e)}, "time": None, "peak_rss_mb": None,
+                           "py_tracemalloc_peak_mb": None,
+                           "error": traceback.format_exc()}
 
     # 组织输出
     out = {
@@ -207,6 +228,7 @@ def run_instance(path, args):
         "lp": lp_wrapper,
         "warm_mcmf": warm_wrapper,
         "hungarian": hungarian_wrapper,
+        "pso": pso_wrapper,
         "run_timestamp": time.time()
     }
 
@@ -216,6 +238,7 @@ def run_instance(path, args):
         json.dump(out, f, indent=2, ensure_ascii=False)
     print("Wrote", outpath)
     return outpath
+
 
 def main():
     import fnmatch
@@ -228,6 +251,8 @@ def main():
     p.add_argument("--warm", action="store_true",
                    help="Enable greedy warm-start")
     p.add_argument("--hungarian", action="store_true",
+                   help="Enable hungarian")
+    p.add_argument("--pso", action="store_true",
                    help="Enable hungarian")
     p.add_argument("--recursive", action="store_true",
                    help="If a directory is provided, scan it recursively for matching files.")
