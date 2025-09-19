@@ -18,8 +18,10 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
 # optional
 try:
     from scipy import stats
@@ -291,9 +293,11 @@ def parse_result_file(path, instances_dir=None):
         total_pref = None
         total_flow = None
         if isinstance(result_dict, dict):
-            total_pref = result_dict.get("total_pref_score") or result_dict.get("total_pref") or result_dict.get("pref") or None
+            total_pref = result_dict.get("total_pref_score") or result_dict.get("total_pref") or result_dict.get(
+                "pref") or None
             # some results record 'total_assigned' or 'total_flow'
-            total_flow = result_dict.get("total_flow") or result_dict.get("total_assigned") or result_dict.get("assigned") or None
+            total_flow = result_dict.get("total_flow") or result_dict.get("total_assigned") or result_dict.get(
+                "assigned") or None
 
         # return aggregated stats
         return {
@@ -311,28 +315,46 @@ def parse_result_file(path, instances_dir=None):
 
     # parse each method's result AND time & memory (try common locations)
     mcmf_result = get_nested(data, "mcmf", "result", default=None)
-    mcmf_time = get_nested(data, "mcmf", "time", default=None) or get_nested(data, "mcmf", "timings", "total_time", default=None)
+    mcmf_time = get_nested(data, "mcmf", "time", default=None) or get_nested(data, "mcmf", "timings", "total_time",
+                                                                             default=None)
     mcmf_peak_rss = get_nested(data, "mcmf", "peak_rss_mb", default=None)
     mcmf_tracemalloc = get_nested(data, "mcmf", "py_tracemalloc_peak_mb", default=None)
     m = analyze_method(mcmf_result)
 
     greedy_result = get_nested(data, "greedy", "result", default=None)
-    greedy_time = get_nested(data, "greedy", "time", default=None) or get_nested(data, "greedy", "timings", "total_time", default=None)
+    greedy_time = get_nested(data, "greedy", "time", default=None) or get_nested(data, "greedy", "timings",
+                                                                                 "total_time", default=None)
     greedy_peak_rss = get_nested(data, "greedy", "peak_rss_mb", default=None)
     greedy_tracemalloc = get_nested(data, "greedy", "py_tracemalloc_peak_mb", default=None)
     g = analyze_method(greedy_result)
 
     lp_result = get_nested(data, "lp", "result", default=None)
-    lp_time = get_nested(data, "lp", "time", default=None) or get_nested(data, "lp", "timings", "total_time", default=None)
+    lp_time = get_nested(data, "lp", "time", default=None) or get_nested(data, "lp", "timings", "total_time",
+                                                                         default=None)
     lp_peak_rss = get_nested(data, "lp", "peak_rss_mb", default=None)
     lp_tracemalloc = get_nested(data, "lp", "py_tracemalloc_peak_mb", default=None)
     l = analyze_method(lp_result)
 
     warm_result = get_nested(data, "warm_mcmf", "result", default=None)
-    warm_time = get_nested(data, "warm_mcmf", "time", default=None) or get_nested(data, "warm_mcmf", "timings", "total_time", default=None)
+    warm_time = get_nested(data, "warm_mcmf", "time", default=None) or get_nested(data, "warm_mcmf", "timings",
+                                                                                  "total_time", default=None)
     warm_peak_rss = get_nested(data, "warm_mcmf", "peak_rss_mb", default=None)
     warm_tracemalloc = get_nested(data, "warm_mcmf", "py_tracemalloc_peak_mb", default=None)
     w = analyze_method(warm_result)
+
+    hungarian_result = get_nested(data, "hungarian", "result", default=None)
+    hungarian_time = get_nested(data, "hungarian", "time", default=None) or get_nested(data, "hungarian", "timings",
+                                                                                       "total_time", default=None)
+    hungarian_peak_rss = get_nested(data, "hungarian", "peak_rss_mb", default=None)
+    hungarian_tracemalloc = get_nested(data, "hungarian", "py_tracemalloc_peak_mb", default=None)
+    h = analyze_method(hungarian_result)
+
+    pso_result = get_nested(data, "pso", "result", default=None)
+    pso_time = get_nested(data, "pso", "time", default=None) or get_nested(data, "hungarian", "timings", "total_time",
+                                                                           default=None)
+    pso_peak_rss = get_nested(data, "pso", "peak_rss_mb", default=None)
+    pso_tracemalloc = get_nested(data, "pso", "py_tracemalloc_peak_mb", default=None)
+    p = analyze_method(pso_result)
 
     # optionally compute total_demand by loading instance file (as before)
     total_demand = None
@@ -386,6 +408,28 @@ def parse_result_file(path, instances_dir=None):
         "warm_mcmf_full_share": w["full_share"],
         "warm_mcmf_p80_share": w["p80_share"],
         "warm_mcmf_p60_share": w["p60_share"],
+        # hungarian
+        "hungarian_total_pref": h["total_pref"],
+        "hungarian_total_assigned": h["total_flow"],
+        "hungarian_time": try_float(hungarian_time),
+        "hungarian_peak_rss_mb": try_float(hungarian_peak_rss),
+        "hungarian_py_tracemalloc_peak_mb": try_float(hungarian_tracemalloc),
+        "hungarian_unserved_count": h["unserved_count"],
+        "hungarian_unserved_share": h["unserved_share"],
+        "hungarian_full_share": h["full_share"],
+        "hungarian_p80_share": h["p80_share"],
+        "hungarian_p60_share": h["p60_share"],
+        # pso
+        "pso_total_pref": p["total_pref"],
+        "pso_total_assigned": p["total_flow"],
+        "pso_time": try_float(pso_time),
+        "pso_peak_rss_mb": try_float(pso_peak_rss),
+        "pso_py_tracemalloc_peak_mb": try_float(pso_tracemalloc),
+        "pso_unserved_count": p["unserved_count"],
+        "pso_unserved_share": p["unserved_share"],
+        "pso_full_share": p["full_share"],
+        "pso_p80_share": p["p80_share"],
+        "pso_p60_share": p["p60_share"],
         # meta
         "total_demand": try_float(total_demand)
     }
@@ -423,11 +467,18 @@ def aggregate_results(rows):
                                         axis=1)
         df["warm_mcmf_fulfillment"] = df.apply(
             lambda r: safe_divide(r.get("warm_mcmf_total_assigned"), r.get("total_demand")), axis=1)
+        df["hungarian_fulfillment"] = df.apply(
+            lambda r: safe_divide(r.get("hungarian_total_assigned"), r.get("total_demand")),
+            axis=1)
+        df["pso_fulfillment"] = df.apply(
+            lambda r: safe_divide(r.get("pso_total_assigned"), r.get("total_demand")), axis=1)
     else:
         df["mcmf_fulfillment"] = None
         df["greedy_fulfillment"] = None
         df["lp_fulfillment"] = None
         df["warm_mcmf_fulfillment"] = None
+        df["hungarian_fulfillment"] = None
+        df["pso_fulfillment"] = None
 
     # improvement percent over greedy and lp
     df["pref_greedy_vs_mcmf"] = df.apply(
@@ -436,6 +487,10 @@ def aggregate_results(rows):
                                      axis=1)
     df["pref_warm_vs_mcmf"] = df.apply(
         lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("warm_mcmf_total_pref")), axis=1)
+    df["pref_hungarian_vs_mcmf"] = df.apply(
+        lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("hungarian_total_pref")), axis=1)
+    df["pref_pso_vs_mcmf"] = df.apply(
+        lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("pso_total_pref")), axis=1)
 
     return df
 
@@ -464,11 +519,59 @@ def save_csv(df, out_path):
     df.to_csv(out_path, index=False)
     print(f"Wrote CSV summary to {out_path}")
 
+def plot_runtime_vs_pref_improved(df, plotdir):
+    methods = ['mcmf', 'greedy', 'lp', 'warm_mcmf', 'hungarian', 'pso']
+    colors = {"mcmf": "C0", "greedy": "C1", "lp": "C2", "warm_mcmf": "C3", "hungarian": "C4"}
 
-def plot_comparisons(df, plotdir, max_instances_for_bar=50):
+    plt.figure(figsize=(10,6))
+    ax = plt.gca()
+
+    # 画每个方法的点
+    for m in methods:
+        xt = f"{m}_time"
+        yt = f"{m}_total_pref"
+        if xt in df.columns and yt in df.columns and df[xt].notnull().any() and df[yt].notnull().any():
+            x = df[xt].dropna()
+            y = df.loc[x.index, yt].dropna()
+            # 保证索引一致
+            common_idx = x.index.intersection(y.index)
+            x = x.loc[common_idx].astype(float)
+            y = df.loc[common_idx, yt].astype(float)
+
+            if len(x) == 0:
+                continue
+
+            # 抖动（对数前先加小常数防止 log(0)）
+            jitter = (np.random.rand(len(x)) - 0.5) * 0.05  # adjust jitter量级
+            x_plot = np.array(x) + jitter
+
+            # 使用对数 x 轴时，需要对 0 时间做小偏移
+            x_plot = np.maximum(x_plot, 1e-4)
+
+            ax.scatter(x_plot, y, label=m, color=colors.get(m, None), s=40, alpha=0.6, edgecolors='w', linewidth=0.3)
+
+            # 标注中位数/均值
+            mean_x = np.median(x)  # or np.mean(x)
+            mean_y = np.median(y)
+            ax.plot([mean_x], [mean_y], marker='D', markersize=6, color=colors.get(m, None), markeredgecolor='k')
+
+    ax.set_xscale('log')  # 对数尺度
+    ax.set_xlabel("Runtime (s) — log scale")
+    ax.set_ylabel("Total preference")
+    ax.set_title("Runtime vs Total preference (log-x, jittered)")
+    ax.legend(frameon=True, fontsize='small', ncol=2)
+    ax.grid(True, which='both', ls='--', lw=0.4, alpha=0.6)
+    plt.tight_layout()
+    fpath = os.path.join(plotdir, "runtime_vs_pref_improved_logx.png")
+    plt.savefig(fpath, dpi=300)
+    plt.close()
+    print("Saved", fpath)
+
+
+def plot_comparisons(df, plotdir, max_instances_for_bar=20):
     os.makedirs(plotdir, exist_ok=True)
     # determine methods available
-    methods = ["mcmf", "greedy", "lp", "warm_mcmf"]
+    methods = ["mcmf", "greedy", "lp", "warm_mcmf", "hungarian", "pso"]
     # Only include methods with at least one non-null total_pref
     available = []
     for m in methods:
@@ -524,7 +627,8 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=50):
             plt.close()
             print("Saved", fpath)
         elif time_cols_exist:
-            stats_df = df[time_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
+            stats_df = df[time_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(
+                columns={"index": "method"})
             stats_df["method"] = stats_df["method"].str.replace("_time", "")
             fig, ax = plt.subplots(figsize=(8, 6))
             ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
@@ -552,7 +656,8 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=50):
             plt.close()
             print("Saved", fpath)
         elif mem_cols_exist:
-            stats_df = df[mem_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
+            stats_df = df[mem_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(
+                columns={"index": "method"})
             stats_df["method"] = stats_df["method"].str.replace("_peak_rss_mb", "")
             fig, ax = plt.subplots(figsize=(8, 6))
             ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
@@ -566,7 +671,8 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=50):
 
     # 4) Fulfillment rate if available
     if "mcmf_fulfillment" in df.columns and df["mcmf_fulfillment"].notnull().any():
-        ful_cols = [c for c in ["mcmf_fulfillment", "greedy_fulfillment", "lp_fulfillment", "warm_mcmf_fulfillment"] if
+        ful_cols = [c for c in ["mcmf_fulfillment", "greedy_fulfillment", "lp_fulfillment", "warm_mcmf_fulfillment",
+                                "hungarian_fulfillment", "pso_fulfillment"] if
                     c in df.columns and df[c].notnull().any()]
         if len(ful_cols) > 0:
             if ninst <= max_instances_for_bar:
@@ -596,7 +702,7 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=50):
     # 5) Scatter: runtime vs total_pref for each method (if time data exists)
     fig, ax = plt.subplots(figsize=(8, 6))
     plotted = False
-    colors = {"mcmf": "C0", "greedy": "C1", "lp": "C2", "warm_mcmf": "C3"}
+    colors = {"mcmf": "C0", "greedy": "C1", "lp": "C2", "warm_mcmf": "C3", "hungarian": "C4"}
     for m in available:
         xt = f"{m}_time"
         yt = f"{m}_total_pref"
@@ -617,6 +723,8 @@ def plot_comparisons(df, plotdir, max_instances_for_bar=50):
         print("Saved", fpath)
     else:
         plt.close()
+
+    plot_runtime_vs_pref_improved(df, plotdir)
 
 
 def statistical_tests(df):
