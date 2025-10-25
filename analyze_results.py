@@ -1,28 +1,130 @@
 #!/usr/bin/env python3
 """
-analyze_results.py
+analyze_results.py (refactored)
 
-增强版：增加按偏好分档统计（>90, 70-90, <70）以及剔除 pso 时间对时间图的影响并优化时间展示。
-其余功能与原脚本保持兼容。
+功能：
+ - 汇总 result JSON -> CSV
+ - 绘制按实例或均值±std 的柱状图：total_pref, runtime, memory, fulfillment
+ - 统计 pref-band (>90, 70-90, <70) 的分配份额
+ - 中文默认使用 SimSun (若系统可用)，Latin 使用 Times New Roman（rcParams 优先）
+ - 默认移除 runtime vs pref 的散点图（已按要求删除）
 """
 import argparse
 import glob
 import json
 import os
 from pathlib import Path
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
+import matplotlib.patheffects as path_effects
+from matplotlib import font_manager
 
-# optional
+# optional scipy for paired tests
 try:
     from scipy import stats
+
     HAS_SCIPY = True
 except Exception:
     HAS_SCIPY = False
 
+# -------------------------
+# User-tweakable style vars
+# -------------------------
+TITLE_SIZE = 18
+AX_LABEL_SIZE = 14
+TICK_LABEL_SIZE = 12
+LEGEND_SIZE = 11
+BOLD_LEGEND_SIZE = 13
+BOLD_WEIGHT = "heavy"  # try "heavy" or "black" if available
+OUTLINE_WIDTH = 1.2
+OUTLINE_COLOR = "white"
+FIGURE_DPI = 300
 
+# algorithm display order and mapping (fixed)
+ALGO_ORDER = [
+    "greedy",
+    "lp",
+    "pso",
+    "mcmf",
+    "warm_mcmf"
+]
+DISPLAY_MAP = {
+    "greedy": "Greedy",
+    "lp": "LP",
+    "pso": "PSO",
+    "mcmf": "MCMF",
+    "warm_mcmf": "warm_MCMF"
+}
+BOLD_NAMES = {"MCMF", "warm_MCMF"}
+
+# -------------------------
+# Font management
+# -------------------------
+def set_mixed_fonts(simsun_path: Optional[str] = None):
+    """
+    Configure Matplotlib to prefer Times New Roman for Latin and SimSun for CJK.
+    Optionally register simsun_path (ttf/ttc) to guarantee availability.
+    Call this before creating figures.
+    """
+    if simsun_path:
+        if os.path.isfile(simsun_path):
+            try:
+                font_manager.fontManager.addfont(simsun_path)
+                prop = font_manager.FontProperties(fname=simsun_path)
+                simsun_name = prop.get_name()
+                print(f"Registered font file: {simsun_path} (internal name: {simsun_name})")
+            except Exception as e:
+                print("Warning: failed to register SimSun font file:", e)
+        else:
+            print("Warning: simsun_path provided but file not found:", simsun_path)
+
+    preferred = ["Times New Roman", "SimSun"]
+    matplotlib.rcParams['font.family'] = preferred
+    matplotlib.rcParams['font.serif'] = ["Times New Roman"]
+    matplotlib.rcParams['axes.unicode_minus'] = False
+
+# call once (no path by default; if SimSun absent, matplotlib will fallback)
+set_mixed_fonts(None)
+
+# Prepare FontProperties for bold labels (try to favor SimHei for stronger bold for CJK)
+try:
+    fp_bold = FontProperties(family="SimHei", size=BOLD_LEGEND_SIZE, weight=BOLD_WEIGHT)
+except Exception:
+    fp_bold = FontProperties(size=BOLD_LEGEND_SIZE, weight=BOLD_WEIGHT)
+fp_norm = FontProperties(size=LEGEND_SIZE)
+
+# helper to emphasize legend labels (bold + outline)
+def emphasize_legend_entries(leg, emphasize_names=set()):
+    if leg is None:
+        return
+    for text in leg.get_texts():
+        txt = text.get_text()
+        # set normal font first
+        text.set_fontproperties(fp_norm)
+    for text in leg.get_texts():
+        txt = text.get_text()
+        if txt in emphasize_names:
+            # apply bold font properties and outline for visibility
+            text.set_fontproperties(fp_bold)
+            text.set_fontweight(BOLD_WEIGHT)
+            text.set_path_effects([
+                path_effects.Stroke(linewidth=OUTLINE_WIDTH, foreground=OUTLINE_COLOR),
+                path_effects.Normal()
+            ])
+
+def save_csv(df, out_path):
+    df.to_csv(out_path, index=False)
+    print(f"Wrote CSV summary to {out_path}")
+
+# -------------------------
+# Data parsing utilities
+# (largely kept from original, slightly reorganized)
+# -------------------------
 def load_instance_user_needs(instances_dir, instance_name):
     if instances_dir is None:
         return None
@@ -73,10 +175,6 @@ def load_instance_total_demand(instances_dir, instance_name):
 
 
 def load_instance_score_map(instances_dir, instance_name):
-    """
-    读取实例文件并返回 mapping: (user_id_str, supplier_id_str) -> score (float)
-    若无法加载返回 None
-    """
     if instances_dir is None:
         return None
     p = Path(instances_dir) / f"{instance_name}.json"
@@ -92,13 +190,11 @@ def load_instance_score_map(instances_dir, instance_name):
                 continue
             prefs = u.get("supplier_scores", [])
             for entry in prefs:
-                # entry may be [sid, score] or (sid, score) or dict
                 try:
                     if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                         sid = entry[0]
                         sc = entry[1]
                     elif isinstance(entry, dict):
-                        # try common keys
                         sid = entry.get("supplier") or entry.get("sid") or entry.get("id")
                         sc = entry.get("score") or entry.get("sc") or entry.get("val")
                     else:
@@ -114,15 +210,10 @@ def load_instance_score_map(instances_dir, instance_name):
 
 
 def extract_alloc_map(result_dict):
-    """
-    原来的聚合版：提取 user -> total_allocated (float)
-    """
     if not isinstance(result_dict, dict):
         return None, None
-
     allocs = result_dict.get("allocations") or result_dict.get("allocation") or result_dict.get("alloc") or None
     if allocs is None:
-        # heuristics: look for nested dict-like structure
         for k, v in result_dict.items():
             if isinstance(v, dict):
                 sample_vals = list(v.values())[:3]
@@ -131,8 +222,6 @@ def extract_alloc_map(result_dict):
                     break
         if allocs is None:
             return None, None
-
-    # normalize to dict user_id -> list
     if isinstance(allocs, list):
         alloc_map = {}
         for item in allocs:
@@ -195,32 +284,22 @@ def extract_alloc_map(result_dict):
                     amt = 0.0
             total += amt
         out_map[str(uid)] = total
-
     return out_map, len(out_map)
 
 
 def extract_alloc_full(result_dict):
-    """
-    更详细的解析：尽可能返回 user_id(str) -> list of (supplier_id_str, amount_float)
-    若解析失败，返回 (None)
-    """
     if not isinstance(result_dict, dict):
         return None
-
     allocs = result_dict.get("allocations") or result_dict.get("allocation") or result_dict.get("alloc") or None
     if allocs is None:
-        # try nested heuristics
         for k, v in result_dict.items():
             if isinstance(v, dict):
-                # heuristics: dict of user->list
                 sample_vals = list(v.values())[:3]
                 if sample_vals and all(isinstance(x, (list, tuple, dict)) for x in sample_vals):
                     allocs = v
                     break
         if allocs is None:
             return None
-
-    # allocs can be dict or list
     alloc_full = {}
     try:
         if isinstance(allocs, dict):
@@ -231,13 +310,11 @@ def extract_alloc_full(result_dict):
                     alloc_full[uid_s] = []
                     continue
                 if isinstance(lst, (int, float)):
-                    # no supplier breakdown, we can't split -> store as unknown supplier
                     alloc_full[uid_s] = [("UNKNOWN", float(lst))]
                     continue
                 for entry in lst:
                     if entry is None:
                         continue
-                    # entry can be (sup, amt) or dict
                     if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                         try:
                             sid = entry[0]
@@ -246,7 +323,6 @@ def extract_alloc_full(result_dict):
                         except Exception:
                             continue
                     elif isinstance(entry, dict):
-                        # try to find supplier id and amount
                         sid = None
                         amt = None
                         for key in ("supplier", "sid", "sup", "s"):
@@ -263,7 +339,6 @@ def extract_alloc_full(result_dict):
                         if sid is not None and amt is not None:
                             parsed.append((str(sid), amt))
                         else:
-                            # fallback: try first two values
                             vals = list(entry.values())
                             if len(vals) >= 2 and isinstance(vals[1], (int, float, str)):
                                 try:
@@ -273,7 +348,6 @@ def extract_alloc_full(result_dict):
                                 except Exception:
                                     continue
                     else:
-                        # entry might be a single number (no supplier info)
                         try:
                             amt = float(entry)
                             parsed.append(("UNKNOWN", amt))
@@ -281,7 +355,6 @@ def extract_alloc_full(result_dict):
                             continue
                 alloc_full[uid_s] = parsed
         elif isinstance(allocs, list):
-            # list of pairs or dicts
             for item in allocs:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
                     uid = str(item[0])
@@ -354,19 +427,10 @@ def extract_alloc_full(result_dict):
             return None
     except Exception:
         return None
-
     return alloc_full
 
 
 def compute_pref_band_shares(alloc_full, score_map):
-    """
-    Given alloc_full: user_id -> [(sup_id, amt), ...]
-    and score_map: (user_id, sup_id) -> score (float) or None
-    returns dict with:
-      total_assigned, gt90_amt, 70_90_amt, lt70_amt,
-      gt90_share, 70_90_share, lt70_share
-    If score_map is None or alloc_full is None -> returns None for shares.
-    """
     if alloc_full is None or score_map is None:
         return {
             "total_assigned": None,
@@ -386,11 +450,8 @@ def compute_pref_band_shares(alloc_full, score_map):
             total += a
             sc = score_map.get((str(uid), str(sid)))
             if sc is None:
-                # try without user key (some score maps may be supplier-only) - skip if not found
                 sc = score_map.get((str(uid), str(sid)))
             if sc is None:
-                # If no per-user score available, try supplier-only keys (not typical), else treat as unknown -> skip
-                # We choose to skip unknown-score allocations from band calculation (they do not affect shares)
                 continue
             try:
                 scv = float(sc)
@@ -432,10 +493,7 @@ def compute_satisfaction_stats(alloc_map, user_needs_map, total_users_from_meta=
             "p60_count": None, "p60_share": None,
             "total_users_in_alloc": len(alloc_map)
         }
-
-    full = 0
-    p80 = 0
-    p60 = 0
+    full = p80 = p60 = 0
     total_users = 0
     for uid, alloc in alloc_map.items():
         total_users += 1
@@ -449,7 +507,6 @@ def compute_satisfaction_stats(alloc_map, user_needs_map, total_users_from_meta=
             p80 += 1
         if ratio >= 0.6:
             p60 += 1
-
     denom = None
     if total_users_from_meta is not None:
         try:
@@ -460,12 +517,10 @@ def compute_satisfaction_stats(alloc_map, user_needs_map, total_users_from_meta=
     if denom is None:
         known_users = sum(1 for uid in alloc_map.keys() if user_needs_map.get(str(uid)) is not None)
         denom = known_users if known_users > 0 else None
-
     def share(count):
         if denom is None:
             return None
         return float(count) / float(denom)
-
     return {
         "full_count": int(full), "full_share": share(full),
         "p80_count": int(p80), "p80_share": share(p80),
@@ -473,8 +528,10 @@ def compute_satisfaction_stats(alloc_map, user_needs_map, total_users_from_meta=
         "total_users_in_alloc": len(alloc_map)
     }
 
-
-def parse_result_file(path, instances_dir=None):
+# -------------------------
+# result parsing (per-file -> row)
+# -------------------------
+def parse_result_file(path: str, instances_dir: Optional[str] = None) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     name = data.get("instance", Path(path).stem)
@@ -517,7 +574,6 @@ def parse_result_file(path, instances_dir=None):
             total_pref = result_dict.get("total_pref_score") or result_dict.get("total_pref") or result_dict.get("pref") or None
             total_flow = result_dict.get("total_flow") or result_dict.get("total_assigned") or result_dict.get("assigned") or None
 
-        # preference-band shares (if score_map available)
         band_stats = compute_pref_band_shares(alloc_full, score_map) if alloc_full is not None else {
             "total_assigned": None, "gt90_amt": None, "70_90_amt": None, "lt70_amt": None,
             "gt90_share": None, "70_90_share": None, "lt70_share": None
@@ -534,7 +590,6 @@ def parse_result_file(path, instances_dir=None):
             "p60_share": try_float(sat_stats["p60_share"]),
             "total_pref": try_float(total_pref),
             "total_flow": try_float(total_flow),
-            # band stats
             "band_total_assigned": try_float(band_stats["total_assigned"]),
             "band_gt90_amt": try_float(band_stats["gt90_amt"]),
             "band_70_90_amt": try_float(band_stats["70_90_amt"]),
@@ -544,7 +599,7 @@ def parse_result_file(path, instances_dir=None):
             "band_lt70_share": try_float(band_stats["lt70_share"])
         }
 
-    # parse each method's result AND time & memory
+    # parse each method
     mcmf_result = get_nested(data, "mcmf", "result", default=None)
     mcmf_time = get_nested(data, "mcmf", "time", default=None) or get_nested(data, "mcmf", "timings", "total_time", default=None)
     mcmf_peak_rss = get_nested(data, "mcmf", "peak_rss_mb", default=None)
@@ -585,7 +640,6 @@ def parse_result_file(path, instances_dir=None):
     if instances_dir is not None:
         total_demand = load_instance_total_demand(instances_dir, name)
 
-    # build returned row (增加 band fields)
     row = {
         "instance": name,
         "S": meta.get("S"),
@@ -677,7 +731,9 @@ def parse_result_file(path, instances_dir=None):
     }
     return row
 
-
+# -------------------------
+# small helpers
+# -------------------------
 def try_float(x):
     if x is None:
         return None
@@ -698,29 +754,24 @@ def try_int(x):
 
 def aggregate_results(rows):
     df = pd.DataFrame(rows)
-    # fulfillment: assigned / total_demand if available
     if "total_demand" in df.columns:
         df["mcmf_fulfillment"] = df.apply(lambda r: safe_divide(r.get("mcmf_total_flow"), r.get("total_demand")), axis=1)
         df["greedy_fulfillment"] = df.apply(lambda r: safe_divide(r.get("greedy_total_assigned"), r.get("total_demand")), axis=1)
         df["lp_fulfillment"] = df.apply(lambda r: safe_divide(r.get("lp_total_assigned"), r.get("total_demand")), axis=1)
         df["warm_mcmf_fulfillment"] = df.apply(lambda r: safe_divide(r.get("warm_mcmf_total_assigned"), r.get("total_demand")), axis=1)
-        df["hungarian_fulfillment"] = df.apply(lambda r: safe_divide(r.get("hungarian_total_assigned"), r.get("total_demand")), axis=1)
         df["pso_fulfillment"] = df.apply(lambda r: safe_divide(r.get("pso_total_assigned"), r.get("total_demand")), axis=1)
     else:
         df["mcmf_fulfillment"] = None
         df["greedy_fulfillment"] = None
         df["lp_fulfillment"] = None
         df["warm_mcmf_fulfillment"] = None
-        df["hungarian_fulfillment"] = None
         df["pso_fulfillment"] = None
 
-    # improvement percent over greedy and lp
     df["pref_greedy_vs_mcmf"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("greedy_total_pref")), axis=1)
     df["pref_lp_vs_mcmf"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("lp_total_pref")), axis=1)
     df["pref_warm_vs_mcmf"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("warm_mcmf_total_pref")), axis=1)
     df["pref_hungarian_vs_mcmf"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("hungarian_total_pref")), axis=1)
     df["pref_pso_vs_mcmf"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("pso_total_pref")), axis=1)
-
     return df
 
 
@@ -742,208 +793,138 @@ def percent_improvement(a, b):
     denom = max(abs(b), 1e-9)
     return 100.0 * (a - b) / denom
 
+# -------------------------
+# plotting helpers
+# -------------------------
+def plot_grouped_bars_per_instance(df, cols, display_names, plot_title, ylabel, plotdir, fname, max_width_per_inst=0.6):
+    """
+    df: full dataframe
+    cols: list of column names present in df (ordered)
+    display_names: list of friendly labels (same length)
+    """
+    ninst = len(df)
+    if ninst == 0 or not cols:
+        return None
+    figsize = (max(8, ninst * 0.5), 6) if ninst <= 60 else (14, 6)
+    ax = df[cols].plot.bar(figsize=figsize)
+    ax.set_title(plot_title, fontsize=TITLE_SIZE)
+    ax.set_xlabel("实例", fontsize=AX_LABEL_SIZE)
+    ax.set_ylabel(ylabel, fontsize=AX_LABEL_SIZE)
 
-def save_csv(df, out_path):
-    df.to_csv(out_path, index=False)
-    print(f"Wrote CSV summary to {out_path}")
+    # 1-based x ticks
+    ax.set_xticks(range(ninst))
+    if ninst > 30:
+        rot, ha = 45, "right"
+    elif ninst > 10:
+        rot, ha = 30, "right"
+    else:
+        rot, ha = 0, "center"
+    ax.set_xticklabels([str(i) for i in range(1, ninst + 1)], rotation=rot, ha=ha)
+    ax.tick_params(axis='x', labelsize=TICK_LABEL_SIZE)
+    ax.tick_params(axis='y', labelsize=TICK_LABEL_SIZE)
 
+    # legend: use provided display_names in the same order as cols
+    leg = ax.legend(labels=display_names, fontsize=LEGEND_SIZE, frameon=True)
+    emphasize_legend_entries(leg, emphasize_names=BOLD_NAMES)
 
-def plot_runtime_vs_pref_improved(df, plotdir):
-    # exclude pso from runtime-perf scatter (pso often dominates)
-    methods = ['mcmf', 'greedy', 'lp', 'warm_mcmf', 'hungarian']
-    colors = {"mcmf": "C0", "greedy": "C1", "lp": "C2", "warm_mcmf": "C3", "hungarian": "C4"}
-
-    plt.figure(figsize=(10, 6))
-    ax = plt.gca()
-
-    for m in methods:
-        xt = f"{m}_time"
-        yt = f"{m}_total_pref"
-        if xt in df.columns and yt in df.columns and df[xt].notnull().any() and df[yt].notnull().any():
-            x = df[xt].dropna()
-            y = df.loc[x.index, yt].dropna()
-            common_idx = x.index.intersection(y.index)
-            x = x.loc[common_idx].astype(float)
-            y = df.loc[common_idx, yt].astype(float)
-            if len(x) == 0:
-                continue
-            jitter = (np.random.rand(len(x)) - 0.5) * 0.05
-            x_plot = np.array(x) + jitter
-            x_plot = np.maximum(x_plot, 1e-4)
-            ax.scatter(x_plot, y, label=m, color=colors.get(m, None), s=40, alpha=0.6, edgecolors='w', linewidth=0.3)
-            mean_x = np.median(x)
-            mean_y = np.median(y)
-            ax.plot([mean_x], [mean_y], marker='D', markersize=6, color=colors.get(m, None), markeredgecolor='k')
-
-    ax.set_xscale('log')
-    ax.set_xlabel("Runtime (s) — log scale (pso excluded to avoid scale domination)")
-    ax.set_ylabel("Total preference")
-    ax.set_title("Runtime vs Total preference (log-x, jittered)")
-    ax.legend(frameon=True, fontsize='small', ncol=2)
-    ax.grid(True, which='both', ls='--', lw=0.4, alpha=0.6)
     plt.tight_layout()
-    fpath = os.path.join(plotdir, "runtime_vs_pref_improved_logx.png")
-    plt.savefig(fpath, dpi=300)
+    os.makedirs(plotdir, exist_ok=True)
+    fpath = os.path.join(plotdir, fname)
+    plt.savefig(fpath, dpi=FIGURE_DPI)
     plt.close()
     print("Saved", fpath)
+    return fpath
 
-
-def plot_comparisons(df, plotdir, max_instances_for_bar=20):
+def plot_mean_bars(df, cols, display_names, plot_title, ylabel, plotdir, fname):
+    """
+    Mean ± std bar plot across instances.
+    """
+    stats_df = df[cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
+    stats_df["display"] = stats_df["method"].map({c: n for c, n in zip(cols, display_names)}).fillna(stats_df["method"])
+    fig, ax = plt.subplots(figsize=(8, 6))
+    x = np.arange(len(stats_df))
+    means = stats_df["mean"].to_numpy(dtype=float)
+    errs = stats_df["std"].to_numpy(dtype=float)
+    bars = ax.bar(x, means, yerr=errs, capsize=5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(stats_df["display"], rotation=30, ha='right', fontsize=TICK_LABEL_SIZE)
+    for lbl in ax.get_xticklabels():
+        if lbl.get_text() in BOLD_NAMES:
+            lbl.set_fontweight("bold")
+            lbl.set_fontsize(BOLD_LEGEND_SIZE)
+            lbl.set_path_effects([path_effects.Stroke(linewidth=OUTLINE_WIDTH, foreground=OUTLINE_COLOR), path_effects.Normal()])
+    ax.set_title(plot_title, fontsize=TITLE_SIZE)
+    ax.set_ylabel(ylabel, fontsize=AX_LABEL_SIZE)
+    plt.tight_layout()
     os.makedirs(plotdir, exist_ok=True)
-    methods = ["mcmf", "greedy", "lp", "warm_mcmf", "hungarian", "pso"]
-    available = []
-    for m in methods:
-        col = f"{m}_total_pref"
-        if col in df.columns and df[col].notnull().any():
-            available.append(m)
+    fpath = os.path.join(plotdir, fname)
+    plt.savefig(fpath, dpi=FIGURE_DPI)
+    plt.close()
+    print("Saved", fpath)
+    return fpath
 
+# -------------------------
+# Main plotting orchestration
+# -------------------------
+def plot_comparisons(df: pd.DataFrame, plotdir: str, max_instances_for_bar: int = 20):
+    os.makedirs(plotdir, exist_ok=True)
     ninst = len(df)
     if ninst == 0:
         print("No instances to plot.")
         return
 
-    # 1) Total preference comparison
-    pref_cols = [f"{m}_total_pref" for m in available]
-    if ninst <= max_instances_for_bar and pref_cols:
-        ax = df[pref_cols].plot.bar(figsize=(max(8, ninst * 0.6), 6))
-        ax.set_title("Total preference (higher is better) - per instance")
-        ax.set_xlabel("Instance (index)")
-        ax.set_ylabel("Total preference")
-        plt.tight_layout()
-        fpath = os.path.join(plotdir, "total_pref_per_instance.png")
-        plt.savefig(fpath)
-        plt.close()
-        print("Saved", fpath)
-    elif pref_cols:
-        stats_df = df[pref_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
-        stats_df["method"] = stats_df["method"].str.replace("_total_pref", "")
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
-        ax.set_title("Mean total preference ± std (across instances)")
-        ax.set_ylabel("Total preference")
-        plt.tight_layout()
-        fpath = os.path.join(plotdir, "total_pref_mean.png")
-        plt.savefig(fpath)
-        plt.close()
-        print("Saved", fpath)
+    # prepare columns in display order (ALGO_ORDER)
+    # 1) Total preference
+    pref_cols = [f"{m}_total_pref" for m in ALGO_ORDER if f"{m}_total_pref" in df.columns and df[f"{m}_total_pref"].notnull().any()]
+    pref_display = [DISPLAY_MAP.get(m, m) for m in [c.replace("_total_pref", "") for c in pref_cols]]
+    if pref_cols:
+        if ninst <= max_instances_for_bar:
+            plot_grouped_bars_per_instance(df, pref_cols, pref_display, "Total preference (higher is better) - per instance", "Total preference", plotdir, "total_pref_per_instance.png")
+        else:
+            plot_mean_bars(df, pref_cols, pref_display, "Mean total preference ± std (across instances)", "Total preference", plotdir, "total_pref_mean.png")
 
-    # 2) Runtime comparison (exclude pso)
-    time_cols = [f"{m}_time" for m in available if m != "pso"]
-    if any((c in df.columns and df[c].notnull().any()) for c in time_cols):
-        time_cols_exist = [c for c in time_cols if c in df.columns and df[c].notnull().any()]
-        if ninst <= max_instances_for_bar and time_cols_exist:
-            ax = df[time_cols_exist].plot.bar(figsize=(max(8, ninst * 0.6), 6))
-            ax.set_title("Runtime (seconds) - per instance (pso excluded)")
-            ax.set_xlabel("Instance (index)")
-            ax.set_ylabel("Time (s)")
-            plt.tight_layout()
-            fpath = os.path.join(plotdir, "runtime_per_instance.png")
-            plt.savefig(fpath)
-            plt.close()
-            print("Saved", fpath)
-        elif time_cols_exist:
-            stats_df = df[time_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
-            stats_df["method"] = stats_df["method"].str.replace("_time", "")
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
-            ax.set_title("Mean runtime ± std (across instances) (pso excluded)")
-            ax.set_ylabel("Time (s)")
-            plt.tight_layout()
-            fpath = os.path.join(plotdir, "runtime_mean.png")
-            plt.savefig(fpath)
-            plt.close()
-            print("Saved", fpath)
+    # 2) Runtime (exclude pso per original instruction) - show columns in desired order except pso
+    runtime_cols = [f"{m}_time" for m in ALGO_ORDER if m != "pso" and f"{m}_time" in df.columns and df[f"{m}_time"].notnull().any()]
+    runtime_display = [DISPLAY_MAP.get(m, m) for m in [c.replace("_time", "") for c in runtime_cols]]
+    if runtime_cols:
+        if ninst <= max_instances_for_bar:
+            plot_grouped_bars_per_instance(df, runtime_cols, runtime_display, "Runtime (seconds) - per instance (pso excluded)", "Time (s)", plotdir, "runtime_per_instance.png")
+        else:
+            plot_mean_bars(df, runtime_cols, runtime_display, "Mean runtime ± std (across instances) (pso excluded)", "Time (s)", plotdir, "runtime_mean.png")
 
-    # 3) Memory comparison (same as before)
-    mem_cols = [f"{m}_peak_rss_mb" for m in available]
-    if any((c in df.columns and df[c].notnull().any()) for c in mem_cols):
-        mem_cols_exist = [c for c in mem_cols if c in df.columns and df[c].notnull().any()]
-        if ninst <= max_instances_for_bar and mem_cols_exist:
-            ax = df[mem_cols_exist].plot.bar(figsize=(max(8, ninst * 0.6), 6))
-            ax.set_title("Peak memory (RSS, MB) - per instance")
-            ax.set_xlabel("Instance (index)")
-            ax.set_ylabel("Peak RSS (MB)")
-            plt.tight_layout()
-            fpath = os.path.join(plotdir, "memory_per_instance.png")
-            plt.savefig(fpath)
-            plt.close()
-            print("Saved", fpath)
-        elif mem_cols_exist:
-            stats_df = df[mem_cols_exist].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
-            stats_df["method"] = stats_df["method"].str.replace("_peak_rss_mb", "")
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
-            ax.set_title("Mean peak memory (RSS MB) ± std (across instances)")
-            ax.set_ylabel("Peak RSS (MB)")
-            plt.tight_layout()
-            fpath = os.path.join(plotdir, "memory_mean.png")
-            plt.savefig(fpath)
-            plt.close()
-            print("Saved", fpath)
+    # 3) Memory
+    mem_cols = [f"{m}_peak_rss_mb" for m in ALGO_ORDER if f"{m}_peak_rss_mb" in df.columns and df[f"{m}_peak_rss_mb"].notnull().any()]
+    mem_display = [DISPLAY_MAP.get(m, m) for m in [c.replace("_peak_rss_mb", "") for c in mem_cols]]
+    if mem_cols:
+        if ninst <= max_instances_for_bar:
+            plot_grouped_bars_per_instance(df, mem_cols, mem_display, "Peak memory (RSS, MB) - per instance", "Peak RSS (MB)", plotdir, "memory_per_instance.png")
+        else:
+            plot_mean_bars(df, mem_cols, mem_display, "Mean peak memory (RSS MB) ± std (across instances)", "Peak RSS (MB)", plotdir, "memory_mean.png")
 
-    # 4) Fulfillment rate
-    if "mcmf_fulfillment" in df.columns and df["mcmf_fulfillment"].notnull().any():
-        ful_cols = [c for c in ["mcmf_fulfillment", "greedy_fulfillment", "lp_fulfillment", "warm_mcmf_fulfillment", "hungarian_fulfillment"] if c in df.columns and df[c].notnull().any()]
-        if len(ful_cols) > 0:
-            if ninst <= max_instances_for_bar:
-                ax = df[ful_cols].plot.bar(figsize=(max(8, ninst * 0.6), 6))
-                ax.set_title("Fulfillment rate (assigned / total demand) - per instance")
-                ax.set_xlabel("Instance (index)")
-                ax.set_ylabel("Fulfillment rate")
-                plt.tight_layout()
-                fpath = os.path.join(plotdir, "fulfillment_per_instance.png")
-                plt.savefig(fpath)
-                plt.close()
-                print("Saved", fpath)
-            else:
-                stats_df = df[ful_cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
-                stats_df["method"] = stats_df["method"].str.replace("_fulfillment", "")
-                fig, ax = plt.subplots(figsize=(8, 6))
-                ax.bar(stats_df["method"], stats_df["mean"], yerr=stats_df["std"], capsize=5)
-                ax.set_title("Mean fulfillment rate ± std (across instances)")
-                ax.set_ylabel("Fulfillment rate")
-                plt.tight_layout()
-                fpath = os.path.join(plotdir, "fulfillment_mean.png")
-                plt.savefig(fpath)
-                plt.close()
-                print("Saved", fpath)
+    # 4) Fulfillment (assigned / total_demand)
+    ful_cols = [f"{m}_fulfillment" for m in ALGO_ORDER if f"{m}_fulfillment" in df.columns and df[f"{m}_fulfillment"].notnull().any()]
+    ful_display = [DISPLAY_MAP.get(m, m) for m in [c.replace("_fulfillment", "") for c in ful_cols]]
+    if ful_cols:
+        if ninst <= max_instances_for_bar:
+            plot_grouped_bars_per_instance(df, ful_cols, ful_display, "Fulfillment rate (assigned / total demand) - per instance", "Fulfillment", plotdir, "fulfillment_per_instance.png")
+        else:
+            plot_mean_bars(df, ful_cols, ful_display, "Mean fulfillment rate ± std (across instances)", "Fulfillment rate", plotdir, "fulfillment_mean.png")
 
-    # 5) Scatter runtime vs total_pref (exclude pso)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    plotted = False
-    colors = {"mcmf": "C0", "greedy": "C1", "lp": "C2", "warm_mcmf": "C3", "hungarian": "C4"}
-    for m in ["mcmf", "greedy", "lp", "warm_mcmf", "hungarian"]:
-        xt = f"{m}_time"
-        yt = f"{m}_total_pref"
-        if xt in df.columns and yt in df.columns and df[xt].notnull().any() and df[yt].notnull().any():
-            x = df[xt]
-            y = df[yt]
-            ax.scatter(x, y, label=m, color=colors.get(m, "C0"), alpha=0.7)
-            plotted = True
-    if plotted:
-        ax.set_xlabel("Runtime (s)")
-        ax.set_ylabel("Total preference")
-        ax.set_title("Runtime vs Total preference (pso excluded)")
-        ax.legend()
-        plt.tight_layout()
-        fpath = os.path.join(plotdir, "runtime_vs_pref.png")
-        plt.savefig(fpath)
-        plt.close()
-        print("Saved", fpath)
-    else:
-        plt.close()
+    # done (note: runtime vs pref scatter removed as requested)
+    print("Plotting complete.")
 
-    # special improved plot
-    plot_runtime_vs_pref_improved(df, plotdir)
-
-
+# -------------------------
+# Statistical tests helper
+# -------------------------
 def statistical_tests(df):
     res = {}
     if not HAS_SCIPY:
         print("scipy not available: skipping statistical tests")
         return res
-    a = df["mcmf_total_pref"]
-    b = df["greedy_total_pref"]
+    a = df.get("mcmf_total_pref")
+    b = df.get("greedy_total_pref")
+    if a is None or b is None:
+        return res
     mask = a.notnull() & b.notnull()
     if mask.any():
         t, p = stats.ttest_rel(a[mask], b[mask])
@@ -965,14 +946,22 @@ def statistical_tests(df):
             res["mcmf_vs_warm_p"] = float(p2)
     return res
 
-
+# -------------------------
+# CLI and main
+# -------------------------
 def main():
-    p = argparse.ArgumentParser(description="Aggregate JSON result files and produce CSV + plots (enhanced)")
+    p = argparse.ArgumentParser(description="Aggregate JSON result files and produce CSV + plots (refactored)")
     p.add_argument("results", nargs="+", help="one or more result JSON files or glob pattern (e.g. results/*.json)")
     p.add_argument("--out", default="summary.csv", help="CSV output file")
     p.add_argument("--plotdir", default="plots", help="directory to save plots")
-    p.add_argument("--instances-dir", default=None, help="optional directory containing instance JSONs to compute total demand/scores (names must match instance field)")
+    p.add_argument("--instances-dir", default=None, help="optional directory containing instance JSONs")
+    p.add_argument("--simsun", default=None, help="optional path to simsun.ttf/ttc to register for Chinese rendering")
+    p.add_argument("--max-instances-for-bar", type=int, default=20, help="max instances to draw per-instance grouped bars")
     args = p.parse_args()
+
+    # optionally register provided simsun
+    if args.simsun:
+        set_mixed_fonts(args.simsun)
 
     # expand globs and directories
     paths = []
@@ -1016,7 +1005,7 @@ def main():
         for k, v in stats_res.items():
             print(f"  {k}: {v}")
 
-    plot_comparisons(df, args.plotdir)
+    plot_comparisons(df, args.plotdir, max_instances_for_bar=args.max_instances_for_bar)
 
 
 if __name__ == "__main__":

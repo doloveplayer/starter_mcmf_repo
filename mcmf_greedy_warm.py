@@ -99,7 +99,7 @@ def run_partial_greedy(inst, max_fill_fraction=0.9):
 def run_mcmf_with_warmstart(inst,
                             top_k=None,
                             use_warmstart=True,
-                            max_fill_fraction=0.6,
+                            max_fill_fraction=0.01,
                             cancel_max_iter=200,
                             cancel_time_limit=1.0,
                             verbose=False):
