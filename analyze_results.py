@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-analyze_results.py (refactored)
+analyze_results.py (refactored, raw-image output)
 
-功能：
- - 汇总 result JSON -> CSV
- - 绘制按实例或均值±std 的柱状图：total_pref, runtime, memory, fulfillment
- - 统计 pref-band (>90, 70-90, <70) 的分配份额
- - 中文默认使用 SimSun (若系统可用)，Latin 使用 Times New Roman（rcParams 优先）
- - 默认移除 runtime vs pref 的散点图（已按要求删除）
+主要变化：
+ - 绘图改为默认输出“生图”：不显示坐标轴/刻度/标题/图例等，仅保留柱形/误差条可视内容。
+ - 通过常量 CLEAN_IMAGES 控制行为（默认 True）。
+ - 其余解析/统计功能与原脚本兼容。
 """
 import argparse
 import glob
 import json
 import os
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -27,7 +25,6 @@ from matplotlib import font_manager
 # optional scipy for paired tests
 try:
     from scipy import stats
-
     HAS_SCIPY = True
 except Exception:
     HAS_SCIPY = False
@@ -44,6 +41,10 @@ BOLD_WEIGHT = "heavy"  # try "heavy" or "black" if available
 OUTLINE_WIDTH = 1.2
 OUTLINE_COLOR = "white"
 FIGURE_DPI = 300
+
+# Whether to output "clean/raw" images (no axes, ticks, labels, legends, titles).
+# Set to False if you later want full annotated plots.
+CLEAN_IMAGES = True
 
 # algorithm display order and mapping (fixed)
 ALGO_ORDER = [
@@ -91,7 +92,7 @@ def set_mixed_fonts(simsun_path: Optional[str] = None):
 # call once (no path by default; if SimSun absent, matplotlib will fallback)
 set_mixed_fonts(None)
 
-# Prepare FontProperties for bold labels (try to favor SimHei for stronger bold for CJK)
+# Prepare FontProperties for bold labels
 try:
     fp_bold = FontProperties(family="SimHei", size=BOLD_LEGEND_SIZE, weight=BOLD_WEIGHT)
 except Exception:
@@ -103,13 +104,10 @@ def emphasize_legend_entries(leg, emphasize_names=set()):
     if leg is None:
         return
     for text in leg.get_texts():
-        txt = text.get_text()
-        # set normal font first
         text.set_fontproperties(fp_norm)
     for text in leg.get_texts():
         txt = text.get_text()
         if txt in emphasize_names:
-            # apply bold font properties and outline for visibility
             text.set_fontproperties(fp_bold)
             text.set_fontweight(BOLD_WEIGHT)
             text.set_path_effects([
@@ -122,8 +120,7 @@ def save_csv(df, out_path):
     print(f"Wrote CSV summary to {out_path}")
 
 # -------------------------
-# Data parsing utilities
-# (largely kept from original, slightly reorganized)
+# Data parsing utilities (unchanged logic)
 # -------------------------
 def load_instance_user_needs(instances_dir, instance_name):
     if instances_dir is None:
@@ -150,7 +147,6 @@ def load_instance_user_needs(instances_dir, instance_name):
     except Exception:
         return None
 
-
 def load_instance_total_demand(instances_dir, instance_name):
     if instances_dir is None:
         return None
@@ -172,7 +168,6 @@ def load_instance_total_demand(instances_dir, instance_name):
         return total
     except Exception:
         return None
-
 
 def load_instance_score_map(instances_dir, instance_name):
     if instances_dir is None:
@@ -207,7 +202,6 @@ def load_instance_score_map(instances_dir, instance_name):
         return score_map
     except Exception:
         return None
-
 
 def extract_alloc_map(result_dict):
     if not isinstance(result_dict, dict):
@@ -285,7 +279,6 @@ def extract_alloc_map(result_dict):
             total += amt
         out_map[str(uid)] = total
     return out_map, len(out_map)
-
 
 def extract_alloc_full(result_dict):
     if not isinstance(result_dict, dict):
@@ -429,7 +422,6 @@ def extract_alloc_full(result_dict):
         return None
     return alloc_full
 
-
 def compute_pref_band_shares(alloc_full, score_map):
     if alloc_full is None or score_map is None:
         return {
@@ -437,10 +429,7 @@ def compute_pref_band_shares(alloc_full, score_map):
             "gt90_amt": None, "70_90_amt": None, "lt70_amt": None,
             "gt90_share": None, "70_90_share": None, "lt70_share": None
         }
-    total = 0.0
-    gt90 = 0.0
-    b70_90 = 0.0
-    lt70 = 0.0
+    total = gt90 = b70_90 = lt70 = 0.0
     for uid, lst in alloc_full.items():
         for sid, amt in lst:
             try:
@@ -476,7 +465,6 @@ def compute_pref_band_shares(alloc_full, score_map):
         "gt90_amt": float(gt90), "70_90_amt": float(b70_90), "lt70_amt": float(lt70),
         "gt90_share": float(gt90 / total), "70_90_share": float(b70_90 / total), "lt70_share": float(lt70 / total)
     }
-
 
 def compute_satisfaction_stats(alloc_map, user_needs_map, total_users_from_meta=None):
     if alloc_map is None:
@@ -742,7 +730,6 @@ def try_float(x):
     except Exception:
         return None
 
-
 def try_int(x):
     if x is None:
         return None
@@ -750,7 +737,6 @@ def try_int(x):
         return int(x)
     except Exception:
         return None
-
 
 def aggregate_results(rows):
     df = pd.DataFrame(rows)
@@ -774,7 +760,6 @@ def aggregate_results(rows):
     df["pref_pso_vs_mcmf"] = df.apply(lambda r: percent_improvement(r.get("mcmf_total_pref"), r.get("pso_total_pref")), axis=1)
     return df
 
-
 def safe_divide(a, b):
     try:
         if a is None or b is None:
@@ -786,7 +771,6 @@ def safe_divide(a, b):
     except Exception:
         return None
 
-
 def percent_improvement(a, b):
     if a is None or b is None:
         return None
@@ -794,74 +778,102 @@ def percent_improvement(a, b):
     return 100.0 * (a - b) / denom
 
 # -------------------------
-# plotting helpers
+# plotting helpers (clean/raw output)
 # -------------------------
-def plot_grouped_bars_per_instance(df, cols, display_names, plot_title, ylabel, plotdir, fname, max_width_per_inst=0.6):
+def _finalize_and_save(ax, plotdir, fname, dpi=FIGURE_DPI):
+    """
+    Helper: if CLEAN_IMAGES True -> remove axes/ticks/legend/title/labels, save tightly with zero padding.
+    """
+    os.makedirs(plotdir, exist_ok=True)
+    fpath = os.path.join(plotdir, fname)
+    if CLEAN_IMAGES:
+        # hide axes, ticks, spines, legend, title
+        ax.set_frame_on(False)
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+        # remove spines
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+        # remove legend if any
+        leg = ax.get_legend()
+        if leg is not None:
+            leg.remove()
+        # remove title
+        ax.set_title("")
+        # save tightly with no padding
+        plt.savefig(fpath, dpi=dpi, bbox_inches='tight', pad_inches=0)
+    else:
+        plt.savefig(fpath, dpi=dpi)
+    plt.close()
+    print("Saved", fpath)
+    return fpath
+
+def plot_grouped_bars_per_instance(df, cols, display_names, plot_title, ylabel, plotdir, fname):
     """
     df: full dataframe
     cols: list of column names present in df (ordered)
     display_names: list of friendly labels (same length)
+    Outputs clean/raw image by default (CLEAN_IMAGES=True).
     """
     ninst = len(df)
     if ninst == 0 or not cols:
         return None
     figsize = (max(8, ninst * 0.5), 6) if ninst <= 60 else (14, 6)
-    ax = df[cols].plot.bar(figsize=figsize)
-    ax.set_title(plot_title, fontsize=TITLE_SIZE)
-    ax.set_xlabel("实例", fontsize=AX_LABEL_SIZE)
-    ax.set_ylabel(ylabel, fontsize=AX_LABEL_SIZE)
+    fig, ax = plt.subplots(figsize=figsize)
+    # draw bars: use numpy array to preserve order
+    arr = df[cols].to_numpy()
+    # let pandas do grouped bar drawing for convenience but on our axes
+    # we construct a temporary DataFrame to use plot.bar on our axes
+    tmp = pd.DataFrame(data=arr, columns=display_names)
+    tmp.plot.bar(ax=ax, legend=not CLEAN_IMAGES)  # show legend only when not clean
 
-    # 1-based x ticks
-    ax.set_xticks(range(ninst))
-    if ninst > 30:
-        rot, ha = 45, "right"
-    elif ninst > 10:
-        rot, ha = 30, "right"
+    # 1-based x ticks if not cleaning (for raw we remove)
+    if not CLEAN_IMAGES:
+        ax.set_xticks(range(ninst))
+        if ninst > 30:
+            rot, ha = 45, "right"
+        elif ninst > 10:
+            rot, ha = 30, "right"
+        else:
+            rot, ha = 0, "center"
+        ax.set_xticklabels([str(i) for i in range(1, ninst + 1)], rotation=rot, ha=ha)
+        ax.tick_params(axis='x', labelsize=TICK_LABEL_SIZE)
+        ax.tick_params(axis='y', labelsize=TICK_LABEL_SIZE)
+        ax.set_xlabel("实例", fontsize=AX_LABEL_SIZE)
+        ax.set_ylabel(ylabel, fontsize=AX_LABEL_SIZE)
+        ax.set_title(plot_title, fontsize=TITLE_SIZE)
+        # legend handling
+        leg = ax.legend(fontsize=LEGEND_SIZE, frameon=True)
+        emphasize_legend_entries(leg, emphasize_names=BOLD_NAMES)
     else:
-        rot, ha = 0, "center"
-    ax.set_xticklabels([str(i) for i in range(1, ninst + 1)], rotation=rot, ha=ha)
-    ax.tick_params(axis='x', labelsize=TICK_LABEL_SIZE)
-    ax.tick_params(axis='y', labelsize=TICK_LABEL_SIZE)
+        # when clean: remove tick labels (we already hide in finalize helper)
+        pass
 
-    # legend: use provided display_names in the same order as cols
-    leg = ax.legend(labels=display_names, fontsize=LEGEND_SIZE, frameon=True)
-    emphasize_legend_entries(leg, emphasize_names=BOLD_NAMES)
-
-    plt.tight_layout()
-    os.makedirs(plotdir, exist_ok=True)
-    fpath = os.path.join(plotdir, fname)
-    plt.savefig(fpath, dpi=FIGURE_DPI)
-    plt.close()
-    print("Saved", fpath)
-    return fpath
+    return _finalize_and_save(ax, plotdir, fname)
 
 def plot_mean_bars(df, cols, display_names, plot_title, ylabel, plotdir, fname):
     """
-    Mean ± std bar plot across instances.
+    Mean ± std bar plot across instances. Produces clean/raw image by default.
     """
     stats_df = df[cols].agg(["mean", "std"]).transpose().reset_index().rename(columns={"index": "method"})
-    stats_df["display"] = stats_df["method"].map({c: n for c, n in zip(cols, display_names)}).fillna(stats_df["method"])
+    # method column contains original col names; map to display_names
+    stats_df["display"] = [DISPLAY_MAP.get(m.replace("_total_pref","").replace("_time","").replace("_peak_rss_mb","").replace("_fulfillment",""), m) for m in stats_df["method"]]
     fig, ax = plt.subplots(figsize=(8, 6))
     x = np.arange(len(stats_df))
     means = stats_df["mean"].to_numpy(dtype=float)
     errs = stats_df["std"].to_numpy(dtype=float)
     bars = ax.bar(x, means, yerr=errs, capsize=5)
-    ax.set_xticks(x)
-    ax.set_xticklabels(stats_df["display"], rotation=30, ha='right', fontsize=TICK_LABEL_SIZE)
-    for lbl in ax.get_xticklabels():
-        if lbl.get_text() in BOLD_NAMES:
-            lbl.set_fontweight("bold")
-            lbl.set_fontsize(BOLD_LEGEND_SIZE)
-            lbl.set_path_effects([path_effects.Stroke(linewidth=OUTLINE_WIDTH, foreground=OUTLINE_COLOR), path_effects.Normal()])
-    ax.set_title(plot_title, fontsize=TITLE_SIZE)
-    ax.set_ylabel(ylabel, fontsize=AX_LABEL_SIZE)
-    plt.tight_layout()
-    os.makedirs(plotdir, exist_ok=True)
-    fpath = os.path.join(plotdir, fname)
-    plt.savefig(fpath, dpi=FIGURE_DPI)
-    plt.close()
-    print("Saved", fpath)
-    return fpath
+    if not CLEAN_IMAGES:
+        ax.set_xticks(x)
+        ax.set_xticklabels(stats_df["display"], rotation=30, ha='right', fontsize=TICK_LABEL_SIZE)
+        for lbl in ax.get_xticklabels():
+            if lbl.get_text() in BOLD_NAMES:
+                lbl.set_fontweight("bold")
+                lbl.set_fontsize(BOLD_LEGEND_SIZE)
+                lbl.set_path_effects([path_effects.Stroke(linewidth=OUTLINE_WIDTH, foreground=OUTLINE_COLOR), path_effects.Normal()])
+        ax.set_title(plot_title, fontsize=TITLE_SIZE)
+        ax.set_ylabel(ylabel, fontsize=AX_LABEL_SIZE)
+    return _finalize_and_save(ax, plotdir, fname)
 
 # -------------------------
 # Main plotting orchestration
@@ -883,7 +895,7 @@ def plot_comparisons(df: pd.DataFrame, plotdir: str, max_instances_for_bar: int 
         else:
             plot_mean_bars(df, pref_cols, pref_display, "Mean total preference ± std (across instances)", "Total preference", plotdir, "total_pref_mean.png")
 
-    # 2) Runtime (exclude pso per original instruction) - show columns in desired order except pso
+    # 2) Runtime (exclude pso)
     runtime_cols = [f"{m}_time" for m in ALGO_ORDER if m != "pso" and f"{m}_time" in df.columns and df[f"{m}_time"].notnull().any()]
     runtime_display = [DISPLAY_MAP.get(m, m) for m in [c.replace("_time", "") for c in runtime_cols]]
     if runtime_cols:
@@ -901,7 +913,7 @@ def plot_comparisons(df: pd.DataFrame, plotdir: str, max_instances_for_bar: int 
         else:
             plot_mean_bars(df, mem_cols, mem_display, "Mean peak memory (RSS MB) ± std (across instances)", "Peak RSS (MB)", plotdir, "memory_mean.png")
 
-    # 4) Fulfillment (assigned / total_demand)
+    # 4) Fulfillment
     ful_cols = [f"{m}_fulfillment" for m in ALGO_ORDER if f"{m}_fulfillment" in df.columns and df[f"{m}_fulfillment"].notnull().any()]
     ful_display = [DISPLAY_MAP.get(m, m) for m in [c.replace("_fulfillment", "") for c in ful_cols]]
     if ful_cols:
@@ -910,7 +922,6 @@ def plot_comparisons(df: pd.DataFrame, plotdir: str, max_instances_for_bar: int 
         else:
             plot_mean_bars(df, ful_cols, ful_display, "Mean fulfillment rate ± std (across instances)", "Fulfillment rate", plotdir, "fulfillment_mean.png")
 
-    # done (note: runtime vs pref scatter removed as requested)
     print("Plotting complete.")
 
 # -------------------------
@@ -950,18 +961,21 @@ def statistical_tests(df):
 # CLI and main
 # -------------------------
 def main():
-    p = argparse.ArgumentParser(description="Aggregate JSON result files and produce CSV + plots (refactored)")
+    p = argparse.ArgumentParser(description="Aggregate JSON result files and produce CSV + raw-image plots")
     p.add_argument("results", nargs="+", help="one or more result JSON files or glob pattern (e.g. results/*.json)")
     p.add_argument("--out", default="summary.csv", help="CSV output file")
     p.add_argument("--plotdir", default="plots", help="directory to save plots")
     p.add_argument("--instances-dir", default=None, help="optional directory containing instance JSONs")
     p.add_argument("--simsun", default=None, help="optional path to simsun.ttf/ttc to register for Chinese rendering")
     p.add_argument("--max-instances-for-bar", type=int, default=20, help="max instances to draw per-instance grouped bars")
+    p.add_argument("--no-clean", action="store_true", help="if set, produce annotated plots (turn CLEAN_IMAGES=False)")
     args = p.parse_args()
 
-    # optionally register provided simsun
+    global CLEAN_IMAGES
     if args.simsun:
         set_mixed_fonts(args.simsun)
+    if args.no_clean:
+        CLEAN_IMAGES = False
 
     # expand globs and directories
     paths = []
@@ -1006,7 +1020,6 @@ def main():
             print(f"  {k}: {v}")
 
     plot_comparisons(df, args.plotdir, max_instances_for_bar=args.max_instances_for_bar)
-
 
 if __name__ == "__main__":
     main()
